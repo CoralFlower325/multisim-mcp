@@ -1222,6 +1222,62 @@ class WorkbenchApiTest(unittest.TestCase):
                     thread.join(timeout=3)
                     server.server_close()
 
+    def test_streams_bounded_durable_job_events_over_sse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            job_dir = root / "jobs"
+            manager = ExperimentJobManager(state_dir=job_dir, start=False)
+            submitted = manager.submit(
+                {
+                    "job_kind": "experiment",
+                    "title": "sse fixture secret",
+                    "output_dir": str(root / "run-output"),
+                }
+            )
+            job_id = submitted["job_id"]
+            with patch.dict("os.environ", {"MULTISIM_MCP_JOB_DIR": str(job_dir)}):
+                server = create_workbench_server(str(root), port=0)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f"http://127.0.0.1:{server.server_port}"
+                    with urlopen(
+                        f"{base}/api/jobs/{job_id}/events?once=1&timeout=1",
+                        timeout=3,
+                    ) as response:
+                        body = response.read().decode("utf-8")
+                        self.assertEqual(
+                            response.headers.get("Content-Type"),
+                            "text/event-stream; charset=utf-8",
+                        )
+                    self.assertIn("event: task_event\n", body)
+                    data_line = next(
+                        line for line in body.splitlines() if line.startswith("data: ")
+                    )
+                    event = json.loads(data_line[6:])
+                    self.assertEqual(event["schema_version"], 1)
+                    self.assertEqual(event["job_id"], job_id)
+                    self.assertEqual(event["state"], "queued")
+                    self.assertRegex(event["event_id"], r"^[0-9a-f]{24}$")
+                    self.assertNotIn("sse fixture secret", body)
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(
+                            f"{base}/api/jobs/{job_id}/events?timeout=30.1",
+                            timeout=3,
+                        )
+                    error_payload = json.loads(raised.exception.read())
+                    self.assertEqual(raised.exception.code, 422)
+                    self.assertEqual(error_payload["error"]["code"], "invalid_input")
+                    self.assertEqual(
+                        error_payload["error"]["command"],
+                        f"/api/jobs/{job_id}/events",
+                    )
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=3)
+                    server.server_close()
+
     def test_empty_job_listing_does_not_create_state_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

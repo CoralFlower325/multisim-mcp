@@ -66,12 +66,40 @@ CLI 的 `--json` 错误以及后续适配器应使用同一嵌套错误对象：
 
 运行中的取消请求会短暂进入 `cancelling`。`mcp_task_status` 提供到 MCP Tasks
 语义的映射（`working`、`completed`、`failed`、`cancelled`）。当前实现仍使用
-已有的 `get_experiment_job` 工具和状态 Resource；`event_types` 是给后续 UI
-订阅/轮询适配器的版本化约定，不改变 1.2 的调用方式。
+已有的 `get_experiment_job` 工具和状态 Resource；每个 Workbench 作业快照还会
+附带有界的 `task_event` 对象，便于 UI 直接渲染状态而不读取作业规格或结果路径。
 
-The durable queue remains polling-compatible today. A future SSE or MCP Tasks
-adapter can emit `created`, `progress`, `state_changed`, and `completed` events
-using the same state names without changing persisted job records.
+可信本机 UI/Agent 可以通过 loopback Workbench API 订阅同一事件：
+
+```text
+GET /api/jobs/{job_id}/events
+```
+
+这是只读的 Server-Sent Events（SSE）接口，不提交任务、不取消任务、不启动仿真。
+服务端先验证作业句柄，再立即发送当前 `task_event`，之后只在状态、阶段或进度发生
+变化时发送 `event: task_event`；连接空闲时发送 `: heartbeat` 注释。默认连接最多
+保持 15 秒，允许 `timeout=0.1..30` 和 `interval=0.05..2` 秒；`once=1`（也接受
+`true`/`yes`）只读取一个快照后关闭。作业进入 `succeeded`、`failed`、`cancelled`
+或 `timed_out` 时连接自动关闭，客户端可以用新的 GET 请求重连。所有选项都有硬上限，
+不会创建无界长连接或后台订阅任务。
+
+每个事件的 `data` 是一行 JSON，字段与 `task_event` 相同并增加短期 `event_id`：
+
+```text
+id: 9d1e3a6b0e1b4d6a9c2f8a10
+event: task_event
+data: {"schema_version":1,"job_id":"job-...","event_type":"state_changed","state":"running","status":"working","stage":"simulate","progress":42,"updated_at":"2026-09-04T10:00:00Z","event_id":"9d1e3a6b0e1b4d6a9c2f8a10"}
+```
+
+`event_id` 由作业标识、更新时间、状态、阶段、进度和状态映射确定性生成，客户端可
+用于去重；当前版本不承诺按 `Last-Event-ID` 回放历史事件。
+
+The durable queue remains polling-compatible. The loopback Workbench API now also
+offers a bounded read-only SSE stream at `/api/jobs/{job_id}/events`; it emits the
+same versioned `task_event` snapshot and closes on terminal states. The existing
+MCP tools, Resources, and persisted job records remain unchanged. A future MCP
+Tasks adapter can reuse the same state names and event payload without changing
+the storage schema.
 
 ## 兼容策略 / Compatibility
 
