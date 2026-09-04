@@ -301,6 +301,9 @@ and rollback now live in an independent injectable pipeline.
 The stable response contract for DeepSeek Harness, other Agents, and the future
 Workbench is documented in the [Agent API contract](docs/AGENT_API.md) and is
 available from `runtime_status.api_contract`.
+The product direction, approval-gated workflow, minimal UI principles, and the
+AI engineering circuit control-plane positioning are documented in the
+[Product Vision](docs/PRODUCT_VISION.md).
 
 ## License
 
