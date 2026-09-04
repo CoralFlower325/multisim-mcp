@@ -12,6 +12,9 @@
 - 1.3 开发：增加稳定 Agent API 契约。`runtime_status` 现在提供可缓存的版本化
   `api_contract`，描述 Tool Profile、功能、错误码和 durable job 状态；CLI JSON
   错误保留 `type/message` 兼容字段，并增加统一 `code/retryable`。
+- 1.3 开发：Workbench loopback API 增加有界只读 SSE 作业事件流
+  `/api/jobs/{job_id}/events`，支持一次性快照、心跳、终态自动关闭和硬超时；不改变
+  MCP 工具、Resource 或持久化作业 schema。
 
 ### English
 
@@ -23,6 +26,10 @@
   cacheable versioned `api_contract` for Tool Profiles, features, error codes, and
   durable-job states. CLI JSON errors retain `type/message` for compatibility and
   add normalized `code/retryable` fields.
+- 1.3 development: added a bounded read-only SSE job event stream at
+  `/api/jobs/{job_id}/events` to the loopback Workbench API, with one-shot snapshots,
+  heartbeats, terminal-state close, and hard time limits; MCP tools, Resources, and
+  persisted job schemas remain unchanged.
 
 ## [1.2.0] - 2026-09-01
 

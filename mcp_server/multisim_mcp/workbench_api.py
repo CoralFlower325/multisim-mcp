@@ -13,7 +13,9 @@ changes the project or starts an EDA operation.
 from __future__ import annotations
 
 import json
+import hashlib
 import socket
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -58,6 +60,13 @@ _ALLOWED_LOOPBACK_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _ASSISTANT_MAX_MESSAGE_CHARS = 12_000
 _ASSISTANT_MAX_HISTORY = 20
 _ASSISTANT_MAX_CONTEXT_BYTES = 48 * 1024
+_SSE_DEFAULT_TIMEOUT = 15.0
+_SSE_MIN_TIMEOUT = 0.1
+_SSE_MAX_TIMEOUT = 30.0
+_SSE_DEFAULT_INTERVAL = 0.5
+_SSE_MIN_INTERVAL = 0.05
+_SSE_MAX_INTERVAL = 2.0
+_SSE_TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
 _ASSISTANT_SYSTEM_PROMPT = """\
 你是 Multisim MCP Workbench 的本地电路设计助手。只提供分析、方案比较、参数建议和
 下一步审阅建议；本次接口没有任何工具权限，绝不能声称已经改文件、生成原理图、运行
@@ -213,6 +222,30 @@ def _sanitize_job(raw: dict[str, Any]) -> dict[str, Any]:
         candidate = failure.get("type") or failure.get("error_type")
         if isinstance(candidate, str) and candidate:
             failure_type = candidate[:80]
+    raw_event = raw.get("task_event")
+    if isinstance(raw_event, dict):
+        event_schema_version = bounded_int(raw_event.get("schema_version", 1), default=1, maximum=10)
+        event_type = bounded_text(raw_event.get("event_type"), 40) or (
+            "completed" if state in _SSE_TERMINAL_STATES else "state_changed"
+        )
+        event_state = bounded_text(raw_event.get("state"), 40) or state[:40]
+        event_status = bounded_text(raw_event.get("status"), 40)
+        event_stage = bounded_text(raw_event.get("stage"), 80) or bounded_text(raw.get("stage"), 80) or ""
+        event_progress = bounded_int(raw_event.get("progress", progress), maximum=100)
+        event_updated_at = bounded_text(raw_event.get("updated_at"), 64) or bounded_text(raw.get("updated_at"), 64)
+        event_job_id = bounded_text(raw_event.get("job_id"), 80) or bounded_text(raw.get("job_id", ""), 80) or ""
+        task_event: dict[str, Any] | None = {
+            "schema_version": event_schema_version,
+            "job_id": event_job_id,
+            "event_type": event_type,
+            "state": event_state,
+            "status": event_status,
+            "stage": event_stage,
+            "progress": event_progress,
+            "updated_at": event_updated_at,
+        }
+    else:
+        task_event = None
     return {
         "job_id": bounded_text(raw.get("job_id", ""), 80) or "",
         "state": state[:40],
@@ -226,10 +259,43 @@ def _sanitize_job(raw: dict[str, Any]) -> dict[str, Any]:
         "recovery_count": bounded_int(raw.get("recovery_count", 0)),
         "status_uri": bounded_text(raw.get("status_uri"), 128),
         "mcp_task_status": bounded_text(raw.get("mcp_task_status"), 40),
+        "task_event": task_event,
         "has_result": isinstance(raw.get("result"), dict),
         "failure_type": failure_type,
         "read_only": True,
     }
+
+
+def _event_stream_options(query: dict[str, list[str]]) -> tuple[float, float, bool]:
+    """Parse bounded SSE options before sending streaming response headers."""
+
+    def bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+        raw = query.get(name, [str(default)])[0]
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be a number") from exc
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
+        return value
+
+    raw_once = query.get("once", ["0"])[0].strip().casefold()
+    if raw_once not in {"0", "1", "false", "true", "no", "yes"}:
+        raise ValueError("once must be a boolean")
+    return (
+        bounded_float("timeout", _SSE_DEFAULT_TIMEOUT, _SSE_MIN_TIMEOUT, _SSE_MAX_TIMEOUT),
+        bounded_float("interval", _SSE_DEFAULT_INTERVAL, _SSE_MIN_INTERVAL, _SSE_MAX_INTERVAL),
+        raw_once in {"1", "true", "yes"},
+    )
+
+
+def _task_event_id(task_event: dict[str, Any]) -> str:
+    """Build a deterministic, bounded SSE id without exposing arbitrary text."""
+    material = "|".join(
+        str(task_event.get(key, ""))
+        for key in ("job_id", "updated_at", "state", "stage", "progress", "status")
+    )
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:24]
 
 
 def _job_result_entry(
@@ -303,6 +369,91 @@ class _WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+
+    def _send_sse_headers(self) -> None:
+        """Start a bounded server-sent event response for local clients."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for key, value in self._cors_headers().items():
+            self.send_header(key, value)
+        self.end_headers()
+
+    def _write_sse(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        event_id: str | None = None,
+    ) -> None:
+        """Write one compact SSE frame and flush it to the browser/agent."""
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        frame = ""
+        if event_id:
+            frame += f"id: {event_id}\n"
+        frame += f"event: {event_type}\n"
+        frame += f"data: {data}\n\n"
+        encoded = frame.encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise ValueError("workbench event exceeds the size limit")
+        self.wfile.write(encoded)
+        self.wfile.flush()
+
+    def _write_sse_heartbeat(self) -> None:
+        self.wfile.write(b": heartbeat\n\n")
+        self.wfile.flush()
+
+    def _stream_job_events(
+        self,
+        manager: ExperimentJobManager,
+        job_id: str,
+        *,
+        timeout: float,
+        interval: float,
+        once: bool,
+    ) -> None:
+        """Poll one durable job and emit bounded state changes over SSE."""
+        self._send_sse_headers()
+        deadline = time.monotonic() + timeout
+        last_event_id: str | None = None
+        while True:
+            try:
+                safe_job = _sanitize_job(manager.get(job_id))
+                task_event = safe_job.get("task_event")
+                if isinstance(task_event, dict):
+                    event_id = _task_event_id(task_event)
+                    if event_id != last_event_id:
+                        self._write_sse(
+                            "task_event",
+                            {**task_event, "event_id": event_id},
+                            event_id=event_id,
+                        )
+                        last_event_id = event_id
+                if once or safe_job.get("state") in _SSE_TERMINAL_STATES:
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                time.sleep(min(interval, remaining))
+                if time.monotonic() >= deadline:
+                    return
+                self._write_sse_heartbeat()
+            except (
+                BrokenPipeError,
+                ConnectionAbortedError,
+                ConnectionResetError,
+                KeyError,
+                FileNotFoundError,
+                OSError,
+                TypeError,
+                ValueError,
+            ):
+                # The client may disconnect at any point.  The stream is
+                # intentionally read-only and bounded, so closing quietly is
+                # safer than attempting a second HTTP response.
+                return
 
     def _send_media(
         self,
@@ -602,6 +753,61 @@ class _WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 mime_type=mime_type,
                 sha256=sha256,
                 download_name=download_name,
+            )
+            return
+        if (
+            len(parts) == 5
+            and parts[1:3] == ["api", "jobs"]
+            and parts[4] == "events"
+        ):
+            job_id = parts[3]
+            event_route = f"/api/jobs/{job_id}/events"
+            try:
+                timeout, interval, once = _event_stream_options(
+                    parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                )
+            except (TypeError, ValueError) as exc:
+                self._send_json(
+                    422,
+                    {
+                        "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                        "service": "multisim-mcp-workbench",
+                        "success": False,
+                        "read_only": True,
+                        "error": self._structured_error(exc, event_route),
+                    },
+                )
+                return
+            try:
+                job_dir = default_job_dir()
+                if not job_dir.is_dir():
+                    raise KeyError("Unknown experiment job handle")
+                manager = ExperimentJobManager(state_dir=job_dir, start=False)
+                manager.get(job_id)
+            except (KeyError, FileNotFoundError, OSError, ValueError) as exc:
+                if isinstance(exc, (KeyError, FileNotFoundError)):
+                    status = 404
+                elif isinstance(exc, ValueError):
+                    status = 422
+                else:
+                    status = 500
+                self._send_json(
+                    status,
+                    {
+                        "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                        "service": "multisim-mcp-workbench",
+                        "success": False,
+                        "read_only": True,
+                        "error": self._structured_error(exc, event_route),
+                    },
+                )
+                return
+            self._stream_job_events(
+                manager,
+                job_id,
+                timeout=timeout,
+                interval=interval,
+                once=once,
             )
             return
         if len(parts) == 4 and parts[1:3] == ["api", "jobs"]:
