@@ -190,6 +190,19 @@ def rank_native_sweep_results(
             continue
         value = _metric_value(series, metric)
         score = value if direction == "minimize" else -value if direction == "maximize" else abs(value - float(target))
+        minimum = min(series)
+        maximum = max(series)
+        dynamic_range = maximum - minimum
+        all_zero = all(sample == 0.0 for sample in series)
+        constant = len(series) > 1 and dynamic_range <= max(1e-12, max(abs(sample) for sample in series) * 1e-9)
+        quality = {
+            "state": "degenerate-zero" if all_zero else "low-information" if len(series) < 2 else "usable",
+            "sample_count": len(series),
+            "finite": True,
+            "all_zero": all_zero,
+            "constant": constant,
+            "dynamic_range": dynamic_range,
+        }
         ranked.append(
             {
                 "index": index,
@@ -200,14 +213,26 @@ def rank_native_sweep_results(
                 "sample_count": len(series),
                 "value": value,
                 "score": score,
+                "quality": quality,
             }
         )
     ranked.sort(key=lambda item: (float(item["score"]), int(item["index"])))
+    quality_counts = {
+        "usable": sum(item["quality"]["state"] == "usable" for item in ranked),
+        "low_information": sum(item["quality"]["state"] == "low-information" for item in ranked),
+        "degenerate_zero": sum(item["quality"]["state"] == "degenerate-zero" for item in ranked),
+    }
+    warnings: list[str] = []
+    if ranked and quality_counts["degenerate_zero"] == len(ranked):
+        warnings.append("all scored outputs are exactly zero; verify source excitation and output probe")
     payload: dict[str, Any] = {
         "state": "completed" if ranked else "no-scorable-results",
+        "quality_state": "degenerate-output" if ranked and quality_counts["degenerate_zero"] == len(ranked) else "valid",
         "objective": {"signal": signal.strip(), "metric": metric, "direction": direction, **({"target": target} if target is not None else {})},
         "ranked_results": ranked,
         "skipped_results": skipped,
+        "quality_counts": quality_counts,
+        "warnings": warnings,
         "best": ranked[0] if ranked else None,
         "source_mutated": False,
     }
@@ -231,6 +256,8 @@ def prepare_native_sweep_patch(
     if not isinstance(ranking, Mapping) or ranking.get("state") != "completed":
         raise ValueError("ranking must be a completed native sweep ranking")
     verified_ranking = _validate_embedded_digest(ranking, "ranking_digest")
+    if verified_ranking.get("quality_state") == "degenerate-output":
+        raise ValueError("ranking contains only zero outputs; review excitation and probes before patching")
     design_id = verified_readiness.get("design_id")
     revision = verified_readiness.get("design_revision")
     if not isinstance(design_id, str) or not design_id.strip():
