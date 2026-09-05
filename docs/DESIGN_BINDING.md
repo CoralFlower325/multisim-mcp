@@ -17,6 +17,7 @@
   `SetRLCValue` 扫描的候选，并要求运行时门禁、显式审批和恢复原值。
 - 就绪对象包含 `readiness_digest`；扫描器会在执行前重新计算摘要，拒绝被调用方篡改的候选或状态。
 - `run_native_parameter_sweep` 接收该就绪报告和审批对象，执行受限 DC/瞬态/AC 参数网格；
+  瞬态采样率可显式配置（默认 100 kHz，以避免部分 Multisim 版本连续扫描时的 COM 限制）；
   它只在当前内存工程中临时改值，结束或异常时恢复全部原值，不调用 `Save`/`SaveAs`。
 - `rank_native_sweep_results` 可按一个明确的信号目标对扫描记录评分排序，结果带有摘要，
   但不会修改工程或自动写入最佳参数；结果还会标记全零、恒定和样本不足等低信息输出。
@@ -86,6 +87,8 @@ keeps the state at `manual-review-required`.
 `run_native_parameter_sweep` consumes that readiness report and an explicit approval to execute
 a bounded DC/transient/AC grid. It changes values only in the open in-memory circuit, always
 restores the original values, and never calls `Save` or `SaveAs`.
+Transient sampling is configurable and defaults to 100 kHz for compatibility with Multisim
+versions that reject repeated 1 MHz COM runs.
 `rank_native_sweep_results` then applies one explicit scalar objective to the returned records,
 producing a deterministic digest-protected ranking without mutating the circuit or persisting a
 best-value patch.

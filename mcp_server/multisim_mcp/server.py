@@ -1678,6 +1678,7 @@ def run_native_parameter_sweep(
     timeout: float = 30.0,
     max_points: int = 500,
     num_samples: int = 500,
+    sample_rate: float = 100_000.0,
     duration: float = 0.001,
     num_frequency_points: int = 20,
     start_frequency: float = 100.0,
@@ -1695,6 +1696,8 @@ def run_native_parameter_sweep(
         raise ValueError("max_points must be between 1 and 10000")
     if isinstance(num_samples, bool) or not isinstance(num_samples, int) or not 1 <= num_samples <= 100_000:
         raise ValueError("num_samples must be between 1 and 100000")
+    if isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)) or not math.isfinite(float(sample_rate)) or not 1.0 <= float(sample_rate) <= 10_000_000.0:
+        raise ValueError("sample_rate must be between 1 and 10000000 Hz")
     combinations, refdes_list = prepare_native_sweep(readiness, candidates, approval)
     circuit = client.circuit_info()
     available = {
@@ -1720,7 +1723,7 @@ def run_native_parameter_sweep(
             elif analysis == "transient":
                 outcome = client.run_transient(
                     output_name,
-                    1_000_000.0,
+                    float(sample_rate),
                     num_samples,
                     float(duration),
                     False,
