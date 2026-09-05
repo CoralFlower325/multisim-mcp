@@ -507,6 +507,7 @@ def apply_requirement_review_to_optimization_spec(
     review: Mapping[str, Any],
     *,
     global_mode: bool = False,
+    require_objectives: bool = True,
 ) -> dict[str, Any]:
     """Fill an optimization spec from a verified requirement review.
 
@@ -521,7 +522,10 @@ def apply_requirement_review_to_optimization_spec(
     if verified["state"] != "ready-for-baseline":
         raise ValueError("requirement review must be ready-for-baseline before optimization")
     handoff = verified.get("optimization_handoff")
-    if not isinstance(handoff, Mapping) or handoff.get("state") != "ready":
+    if not isinstance(handoff, Mapping):
+        raise ValueError("requirement review has no complete optimizer handoff")
+    handoff_state = handoff.get("state")
+    if handoff_state not in ({"ready", "needs-objectives"} if not require_objectives else {"ready"}):
         raise ValueError("requirement review has no complete optimizer handoff")
     requirements = handoff.get("requirements")
     if not isinstance(requirements, list) or not requirements:
@@ -533,13 +537,13 @@ def apply_requirement_review_to_optimization_spec(
             raise ValueError("optimization spec requirements do not match requirement review")
     result["requirements"] = [dict(item) for item in requirements]
     unmapped = handoff.get("unmapped_objectives") or []
-    if unmapped:
+    if unmapped and require_objectives:
         raise ValueError("requirement review contains unmapped objectives")
     if global_mode:
         candidates = handoff.get("multi_objective_candidates")
-        if not isinstance(candidates, list) or not candidates:
+        if (not isinstance(candidates, list) or not candidates) and require_objectives:
             raise ValueError("requirement review has no multi-objective candidates")
-        if not result.get("objectives"):
+        if candidates and not result.get("objectives"):
             result["objectives"] = [
                 {
                     key: item[key]
