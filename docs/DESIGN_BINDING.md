@@ -21,12 +21,19 @@
 
 ## 与 `.ms14` 的边界
 
-当前版本不会直接解析或修改任意 `.ms14` XML。Windows Multisim 连接器或已有工程导入器
-应先生成经过校验的 `CircuitDesign` 快照，再调用此绑定工具。这样可以把工程读取、需求
-解释和文件写回分开审计；后续将增加 COM 枚举到快照的适配器，并继续保留人工确认门。
+`snapshot_open_circuit` 可在 Windows COM 工作者中对当前已打开的 Multisim 工程执行安全的
+`ReportNetlist` 导出，并将解析后的 `CircuitDesign` 与 `circuit_info`、元件/输入/输出枚举
+证据写入独立目录。它不会覆盖源 `.ms14`；输出目录必须是新的快照目录。
+
+当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
+支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限
+快照，并在设计注释中记录未支持项。这样可以把工程读取、需求解释和文件写回分开审计，
+后续再逐步增加 COM 属性到节点/参数的更完整映射。
 
 ## English summary
 
+`snapshot_open_circuit` exports the currently open Multisim circuit through the isolated COM
+worker into a new directory, parses the reported netlist, and preserves enumeration evidence.
 `bind_requirement_review_to_design` is a read-only pre-optimization binding layer. It matches
 `V(node)` and `I(refdes)` requests against a validated `CircuitDesign` snapshot, accepts
 explicit signal aliases, and reports bounded R/C/L value candidates. It does not edit `.ms14`,

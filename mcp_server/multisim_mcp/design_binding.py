@@ -10,10 +10,13 @@ from typing import Any, Final
 
 from .eda_core import CircuitDesign
 from .requirement_contract import validate_requirement_review
+from .spice_adapter import circuit_design_from_spice
 
 
 DESIGN_BINDING_SCHEMA_VERSION: Final = 1
 DESIGN_BINDING_KIND: Final = "multisim-mcp-design-requirement-binding"
+DESIGN_SNAPSHOT_SCHEMA_VERSION: Final = 1
+DESIGN_SNAPSHOT_KIND: Final = "multisim-mcp-existing-design-snapshot"
 _VOLTAGE_RE = re.compile(r"^V\((?P<node>[^(),\s]+)(?:,(?P<reference>[^()\s]+))?\)$", re.I)
 _CURRENT_RE = re.compile(r"^I\((?P<refdes>[^()\s]+)\)$", re.I)
 _OPTIMIZABLE_KINDS: Final = frozenset({"R", "C", "L", "RESISTOR", "CAPACITOR", "INDUCTOR"})
@@ -134,8 +137,53 @@ def bind_requirement_review_to_design(
     return payload
 
 
+def build_existing_design_snapshot(
+    netlist: str,
+    *,
+    circuit_info: Mapping[str, Any],
+    components: list[Any],
+    inputs: list[Any],
+    outputs: list[Any],
+    allow_unsupported: bool = False,
+) -> dict[str, Any]:
+    """Parse an exported netlist and retain COM enumeration evidence."""
+    if not isinstance(netlist, str) or not netlist.strip():
+        raise ValueError("netlist must be non-empty text")
+    if not isinstance(circuit_info, Mapping):
+        raise ValueError("circuit_info must be an object")
+    if not isinstance(components, list) or not isinstance(inputs, list) or not isinstance(outputs, list):
+        raise ValueError("COM enumeration results must be arrays")
+    name = str(circuit_info.get("name") or "Imported Multisim design").strip()
+    design = circuit_design_from_spice(
+        netlist,
+        title=name,
+        allow_unsupported=allow_unsupported,
+    )
+    return {
+        "schema_version": DESIGN_SNAPSHOT_SCHEMA_VERSION,
+        "kind": DESIGN_SNAPSHOT_KIND,
+        "design": design.to_dict(),
+        "netlist_sha256": hashlib.sha256(netlist.encode("utf-8")).hexdigest(),
+        "source_file": str(circuit_info.get("file") or ""),
+        "circuit_name": name,
+        "simulation_state": circuit_info.get("state"),
+        "last_error": str(circuit_info.get("last_error") or ""),
+        "com_enumeration": {
+            "components": components,
+            "inputs": inputs,
+            "outputs": outputs,
+        },
+        "source_mutated": False,
+        "simulation_started": False,
+        "next_step": "bind_requirement_review_to_design",
+    }
+
+
 __all__ = [
     "DESIGN_BINDING_KIND",
+    "DESIGN_SNAPSHOT_KIND",
+    "DESIGN_SNAPSHOT_SCHEMA_VERSION",
     "DESIGN_BINDING_SCHEMA_VERSION",
+    "build_existing_design_snapshot",
     "bind_requirement_review_to_design",
 ]

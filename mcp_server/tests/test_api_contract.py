@@ -18,7 +18,7 @@ class ApiContractTest(unittest.TestCase):
     def test_capabilities_are_deterministic_and_json_safe(self) -> None:
         profile = {
             "name": "full",
-            "tool_count": 80,
+            "tool_count": 81,
             "available_profiles": ["core", "experiment", "optimization", "full"],
         }
         first = build_capabilities(server_version="1.2.0", tool_profile=profile)
@@ -27,7 +27,7 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["api_name"], API_CONTRACT_NAME)
         self.assertEqual(first["api_version"], API_CONTRACT_VERSION)
-        self.assertEqual(first["tool_profile"]["tool_count"], 80)
+        self.assertEqual(first["tool_profile"]["tool_count"], 81)
         self.assertEqual(first["errors"]["codes"], list(ERROR_CODES))
         self.assertIn("status_uri_template", first["tasks"])
         json.dumps(first, ensure_ascii=False, allow_nan=False)

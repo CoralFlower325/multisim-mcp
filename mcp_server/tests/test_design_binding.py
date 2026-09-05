@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
 
-from multisim_mcp.design_binding import bind_requirement_review_to_design
+from multisim_mcp import server
+from multisim_mcp.design_binding import (
+    bind_requirement_review_to_design,
+    build_existing_design_snapshot,
+)
 from multisim_mcp.eda_core import CircuitDesign
 from multisim_mcp.requirement_contract import review_design_requirements
 
@@ -42,6 +49,19 @@ def _design() -> CircuitDesign:
 
 
 class DesignBindingTest(unittest.TestCase):
+    def test_builds_snapshot_from_exported_netlist_and_com_evidence(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",
+            circuit_info={"name": "Opened", "file": "C:/demo.ms14", "state": 0},
+            components=["V1", "R1", "C1"],
+            inputs=["V1"],
+            outputs=["V(out)"],
+        )
+        self.assertEqual(snapshot["kind"], "multisim-mcp-existing-design-snapshot")
+        self.assertEqual(snapshot["design"]["title"], "Opened")
+        self.assertEqual(snapshot["com_enumeration"]["outputs"], ["V(out)"])
+        self.assertFalse(snapshot["source_mutated"])
+
     def test_binds_voltage_and_current_and_lists_optimizable_values(self) -> None:
         review = review_design_requirements(
             [
@@ -93,6 +113,35 @@ class DesignBindingTest(unittest.TestCase):
         )
         self.assertEqual(bound["state"], "ready-for-baseline")
         self.assertEqual(bound["signals"][0]["resolved_signal"], "V(out)")
+
+    def test_server_snapshot_exports_without_touching_source(self) -> None:
+        fake_client = Mock()
+        fake_client.report_netlist.side_effect = lambda path, probes, fmt: (
+            Path(path).write_text(
+                "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",
+                encoding="utf-8",
+            )
+            or path
+        )
+        fake_client.circuit_info.return_value = {
+            "name": "Opened",
+            "file": "C:/source.ms14",
+            "state": 0,
+            "last_error": "",
+        }
+        fake_client.enum_components.return_value = ["V1", "R1", "C1"]
+        fake_client.enum_inputs.return_value = ["V1"]
+        fake_client.enum_outputs.return_value = ["V(out)"]
+        with tempfile.TemporaryDirectory() as tmp, patch.object(server, "client", fake_client):
+            result = server.snapshot_open_circuit(tmp)
+            self.assertEqual(result["design"]["title"], "Opened")
+            self.assertEqual(
+                [item["refdes"] for item in result["design"]["components"]],
+                ["V1", "R1", "C1"],
+            )
+            self.assertTrue(Path(result["snapshot_path"]).is_file())
+            self.assertTrue(Path(result["netlist_path"]).is_file())
+        self.assertFalse(result["source_mutated"])
 
 
 if __name__ == "__main__":
