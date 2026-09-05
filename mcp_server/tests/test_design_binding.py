@@ -60,7 +60,23 @@ class DesignBindingTest(unittest.TestCase):
         self.assertEqual(snapshot["kind"], "multisim-mcp-existing-design-snapshot")
         self.assertEqual(snapshot["design"]["title"], "Opened")
         self.assertEqual(snapshot["com_enumeration"]["outputs"], ["V(out)"])
+        self.assertEqual(snapshot["cross_validation"]["state"], "verified")
+        self.assertEqual(snapshot["next_step"], "bind_requirement_review_to_design")
         self.assertFalse(snapshot["source_mutated"])
+
+    def test_snapshot_marks_com_netlist_mismatch_before_binding(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            "V1 in 0 5\nR1 in out 1k\n.end\n",
+            circuit_info={"name": "Opened", "file": "C:/demo.ms14"},
+            components=["V1", "R1", "C_EXTRA"],
+            inputs=[],
+            outputs=[],
+        )
+        self.assertEqual(snapshot["cross_validation"]["state"], "mismatch")
+        self.assertEqual(snapshot["next_step"], "review_snapshot_mismatch")
+        self.assertEqual(
+            snapshot["cross_validation"]["components_extra_in_enumeration"], ["c_extra"]
+        )
 
     def test_binds_voltage_and_current_and_lists_optimizable_values(self) -> None:
         review = review_design_requirements(

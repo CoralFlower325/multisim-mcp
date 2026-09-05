@@ -66,6 +66,8 @@ Stable and verified on Multisim 14.3:
 - `snapshot_open_circuit` exports the currently open Multisim circuit through the
   isolated COM worker into a new, validated snapshot directory, retaining the
   reported netlist and COM enumeration evidence without overwriting the source.
+  Parsed component references are cross-checked against COM enumeration before
+  the snapshot recommends requirement binding.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs
