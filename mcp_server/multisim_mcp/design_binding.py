@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import csv
+import io
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from .eda_core import CircuitDesign
+from .eda_core import CircuitComponent, CircuitDesign
 from .requirement_contract import validate_requirement_review
 from .spice_adapter import circuit_design_from_spice
 
@@ -23,6 +25,8 @@ _VOLTAGE_RE = re.compile(r"^V\((?P<node>[^(),\s]+)(?:,(?P<reference>[^()\s]+))?\
 _CURRENT_RE = re.compile(r"^I\((?P<refdes>[^()\s]+)\)$", re.I)
 _OPTIMIZABLE_KINDS: Final = frozenset({"R", "C", "L", "RESISTOR", "CAPACITOR", "INDUCTOR"})
 _MODEL_SENSITIVE_KINDS: Final = frozenset({"D", "Q", "M", "J", "X", "U", "T", "O", "S"})
+_REPORT_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_VALID_REFDES_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 
 
 def _digest(value: object) -> str:
@@ -186,11 +190,16 @@ def build_existing_design_snapshot(
     if not isinstance(components, list) or not isinstance(inputs, list) or not isinstance(outputs, list):
         raise ValueError("COM enumeration results must be arrays")
     name = str(circuit_info.get("name") or "Imported Multisim design").strip()
-    design = circuit_design_from_spice(
-        netlist,
-        title=name,
-        allow_unsupported=allow_unsupported,
-    )
+    try:
+        design = circuit_design_from_spice(
+            netlist,
+            title=name,
+            allow_unsupported=allow_unsupported,
+        )
+    except ValueError:
+        if not _looks_like_multisim_connectivity_report(netlist):
+            raise
+        design = circuit_design_from_multisim_report(netlist, title=name)
     cross_validation = cross_validate_design_snapshot(
         design,
         components=components,
@@ -232,6 +241,120 @@ def build_existing_design_snapshot(
     # verify the persisted design evidence deterministically.
     payload["snapshot_digest"] = _digest(payload)
     return payload
+
+
+def _looks_like_multisim_connectivity_report(text: str) -> bool:
+    """Recognize Multisim's CSV/tabular ReportNetlist output without guessing."""
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    # Multisim's connectivity export starts with an encoded title/header; a
+    # normal SPICE netlist starts with a component/directive instead.
+    return first.casefold().startswith("_uc") and bool(_multisim_report_rows(text))
+
+
+def _multisim_report_rows(report: str) -> list[tuple[str, str, str, str]]:
+    """Read both CSV (fmt=1) and fixed-width (fmt=0) ReportNetlist forms."""
+    rows: list[tuple[str, str, str, str]] = []
+    for row in csv.reader(io.StringIO(report)):
+        if len(row) >= 4:
+            values = tuple(item.strip() for item in row[:4])
+            if all(item.casefold().startswith("_uc") for item in values):
+                continue
+            if values[0] and values[1] and values[3] and _REPORT_REF_RE.fullmatch(values[2]):
+                rows.append(values)
+    if rows:
+        return rows
+    for line in report.splitlines():
+        stripped = line.strip()
+        if not stripped or set(stripped) <= {"-"}:
+            continue
+        values = tuple(stripped.split()[:4])
+        if len(values) == 4 and all(item.casefold().startswith("_uc") for item in values):
+            continue
+        if len(values) == 4 and values[0] and values[1] and _REPORT_REF_RE.fullmatch(values[2]):
+            rows.append(values)
+    return rows
+
+
+def _normalize_report_refdes(refdes: str) -> str:
+    """Map Multisim's generated ``_uc...`` names to valid EDA refdes values."""
+    if _VALID_REFDES_RE.fullmatch(refdes):
+        return refdes
+    normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", refdes)
+    normalized = f"X{normalized}" if not normalized or not normalized[0].isalpha() else normalized
+    return normalized[:64]
+
+
+def _enumerated_component_names(values: list[Any]) -> set[str]:
+    names = _enumerated_names(values)
+    return {_normalize_report_refdes(item) for item in names}
+
+
+def circuit_design_from_multisim_report(
+    report: str,
+    *,
+    title: str = "Imported Multisim connectivity report",
+) -> CircuitDesign:
+    """Build a bounded topology snapshot from Multisim's connectivity report.
+
+    The report contains net/refdes/pin rows but normally omits values, models,
+    and hidden pins.  Those omissions are recorded in annotations and later
+    force ``boundary_review.optimization_safe=False``.
+    """
+    if not isinstance(report, str) or not report.strip():
+        raise ValueError("report must be non-empty text")
+    rows = _multisim_report_rows(report)
+    by_ref: dict[str, dict[str, Any]] = {}
+    nets: list[str] = []
+    seen_nets: set[str] = set()
+    for net, _sheet, refdes, pin in rows:
+        net_key = net.casefold()
+        if net_key not in seen_nets:
+            seen_nets.add(net_key)
+            nets.append(net)
+        normalized_refdes = _normalize_report_refdes(refdes)
+        item = by_ref.setdefault(
+            normalized_refdes.casefold(),
+            {"refdes": normalized_refdes, "raw_refdes": refdes, "nodes": [], "pins": []},
+        )
+        if net_key not in {value.casefold() for value in item["nodes"]}:
+            item["nodes"].append(net)
+        item["pins"].append(pin)
+    if not by_ref:
+        raise ValueError("Multisim connectivity report contains no component rows")
+    components: list[CircuitComponent] = []
+    for item in by_ref.values():
+        refdes = str(item["refdes"])
+        prefix = refdes[0].upper() if refdes else "X"
+        kind = prefix if prefix.isalpha() else "X"
+        components.append(
+            CircuitComponent(
+                refdes=refdes,
+                kind=kind,
+                nodes=tuple(item["nodes"]),
+                value=None,
+                model=None,
+                parameters={},
+                annotations={
+                    "report_pins": list(item["pins"]),
+                    "report_refdes": item["raw_refdes"],
+                },
+            )
+        )
+    digest = hashlib.sha256(report.encode("utf-8")).hexdigest()[:20]
+    return CircuitDesign(
+        design_id=f"multisim-report:{digest}",
+        title=title,
+        components=tuple(components),
+        nets=tuple(nets),
+        annotations={
+            "multisim_report": {
+                "format": "connectivity",
+                "model_data_complete": False,
+                "hidden_pin_mapping_verified": False,
+            }
+        },
+        source_netlist=report,
+    )
 
 
 def load_existing_design_snapshot(path: str) -> tuple[dict[str, Any], CircuitDesign]:
@@ -304,7 +427,7 @@ def cross_validate_design_snapshot(
     """Compare parsed design references with COM enumeration evidence."""
     if not isinstance(design, CircuitDesign):
         raise ValueError("design must be CircuitDesign")
-    enumerated_components = _enumerated_names(components)
+    enumerated_components = _enumerated_component_names(components)
     parsed_components = {item.refdes.casefold() for item in design.components}
     missing = sorted(parsed_components - enumerated_components)
     extra = sorted(enumerated_components - parsed_components)
@@ -357,6 +480,14 @@ def assess_snapshot_boundaries(design: CircuitDesign) -> dict[str, Any]:
                     "message": "多端器件或耦合器件的隐藏引脚/内部节点需要在 Multisim 中人工确认。",
                 }
             )
+    report_meta = design.annotations.get("multisim_report", {})
+    if isinstance(report_meta, Mapping) and report_meta.get("format") == "connectivity":
+        findings.append(
+            {
+                "code": "connectivity_report_missing_parameters",
+                "message": "Multisim 连接关系表通常不含元件值、模型和隐藏引脚，需导出/确认完整参数后才能优化。",
+            }
+        )
     spice_import = design.annotations.get("spice_import", {})
     unsupported = (
         spice_import.get("unsupported", [])
@@ -391,6 +522,7 @@ __all__ = [
     "DESIGN_SNAPSHOT_SCHEMA_VERSION",
     "DESIGN_BINDING_SCHEMA_VERSION",
     "build_existing_design_snapshot",
+    "circuit_design_from_multisim_report",
     "load_existing_design_snapshot",
     "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
