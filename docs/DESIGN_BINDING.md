@@ -20,6 +20,8 @@
   它只在当前内存工程中临时改值，结束或异常时恢复全部原值，不调用 `Save`/`SaveAs`。
 - `rank_native_sweep_results` 可按一个明确的信号目标对扫描记录评分排序，结果带有摘要，
   但不会修改工程或自动写入最佳参数。
+- `prepare_native_sweep_patch` 将最佳候选转换为标准、可逆的 `DesignPatch` 草案，后续仍须走
+  现有的验证与审批流程；该步骤不写回 `.ms14`。
 
 ## 返回状态
 
@@ -84,6 +86,9 @@ restores the original values, and never calls `Save` or `SaveAs`.
 `rank_native_sweep_results` then applies one explicit scalar objective to the returned records,
 producing a deterministic digest-protected ranking without mutating the circuit or persisting a
 best-value patch.
+`prepare_native_sweep_patch` converts that best candidate into the existing reversible
+`DesignPatch` contract. The draft remains non-mutating and must pass the normal verification and
+approval workflow before any persisted design is changed; direct `.ms14` write-back remains off.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.

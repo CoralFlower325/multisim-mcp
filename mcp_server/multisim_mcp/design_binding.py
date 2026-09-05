@@ -188,6 +188,8 @@ def assess_native_optimization_readiness(
     payload = {
         "state": "ready-for-com-parameter-sweep" if ready else "manual-review-required",
         "execution_mode": "multisim-com-open-circuit",
+        "design_id": design.design_id,
+        "design_revision": design.revision,
         "candidate_count": len(candidates),
         "candidates": [dict(item) for item in candidates],
         "native_metadata": {
