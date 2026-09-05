@@ -86,6 +86,18 @@ class DesignOptimizationServerTest(unittest.TestCase):
             server, "_job_manager", return_value=manager
         ):
             output = str(Path(tmp) / "optimization")
+            review = review_design_requirements(
+                SPEC["requirements"],
+                soft_objectives=[
+                    {
+                        "id": "maximize-output",
+                        "metric": "mean",
+                        "signal": "V(out)",
+                        "goal": "maximize",
+                        "unit": "V",
+                    }
+                ],
+            )
             result = server.submit_design_optimization(
                 DESIGN,
                 SPEC,
@@ -93,6 +105,7 @@ class DesignOptimizationServerTest(unittest.TestCase):
                 timeout_per_experiment=45.0,
                 max_points=321,
                 job_timeout=600.0,
+                requirement_review=review,
             )
         self.assertEqual(result["state"], "queued")
         submitted = manager.submit.call_args.args[0]
@@ -101,6 +114,9 @@ class DesignOptimizationServerTest(unittest.TestCase):
         self.assertEqual(submitted["optimization_spec"], SPEC)
         self.assertEqual(submitted["timeout_per_experiment"], 45.0)
         self.assertEqual(submitted["max_points"], 321)
+        self.assertEqual(
+            submitted["requirement_review_digest"], review["contract_digest"]
+        )
 
     def test_sync_adapter_projects_verified_requirement_review(self) -> None:
         service = Mock()

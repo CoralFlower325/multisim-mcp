@@ -55,7 +55,8 @@ Stable and verified on Multisim 14.3:
   explicit in-memory candidate, with before/after diagnoses and no auto-adoption.
 - Mixed topology/value `global_optimize_design` with exhaustive or deterministic
   Halton search, hard constraints, epsilon-aware Pareto fronts, and no auto-write.
-- `optimize_design` / `global_optimize_design` can consume the verified
+- `optimize_design` / `global_optimize_design` and their durable/autonomous
+  counterparts can consume the verified
   `requirement_review` envelope directly, filling measurable hard constraints and
   objective candidates without manual JSON copying; conflicts and ambiguous goals
   fail closed before simulation.
