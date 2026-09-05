@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from multisim_mcp import server
 from multisim_mcp.design_binding import (
+    assess_snapshot_boundaries,
     bind_requirement_review_to_design,
     build_existing_design_snapshot,
 )
@@ -49,6 +50,24 @@ def _design() -> CircuitDesign:
 
 
 class DesignBindingTest(unittest.TestCase):
+    def test_flags_model_and_hidden_pin_boundaries(self) -> None:
+        design = CircuitDesign.from_dict(
+            {
+                "schema_version": 1,
+                "design_id": "boundary-demo",
+                "title": "Boundary demo",
+                "components": [
+                    {"refdes": "D1", "kind": "D", "nodes": ["a", "0"], "value": None},
+                    {"refdes": "X1", "kind": "X", "nodes": ["a", "b", "c"], "value": None, "model": "AMP"},
+                ],
+                "nets": ["a", "b", "c", "0"],
+            }
+        )
+        result = assess_snapshot_boundaries(design)
+        self.assertEqual(result["state"], "manual-review-required")
+        self.assertFalse(result["optimization_safe"])
+        self.assertGreaterEqual(result["finding_count"], 2)
+
     def test_builds_snapshot_from_exported_netlist_and_com_evidence(self) -> None:
         snapshot = build_existing_design_snapshot(
             "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",

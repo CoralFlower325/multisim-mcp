@@ -67,7 +67,8 @@ Stable and verified on Multisim 14.3:
   isolated COM worker into a new, validated snapshot directory, retaining the
   reported netlist and COM enumeration evidence without overwriting the source.
   Parsed component references are cross-checked against COM enumeration before
-  the snapshot recommends requirement binding.
+  the snapshot recommends requirement binding. Model-sensitive devices and
+  hidden-pin carriers are surfaced as manual-review boundaries.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs

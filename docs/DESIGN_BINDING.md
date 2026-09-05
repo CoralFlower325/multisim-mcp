@@ -26,6 +26,8 @@
 证据写入独立目录。它不会覆盖源 `.ms14`；输出目录必须是新的快照目录。
 快照还包含 `cross_validation`：解析网表中的参考标号必须与 COM 元件枚举一致，否则
 `next_step` 为 `review_snapshot_mismatch`，不能直接进入需求绑定。
+`boundary_review` 会额外标出模型缺失、多端/耦合器件隐藏引脚以及未结构化网表记录；
+存在这些发现时，下一步为 `review_snapshot_boundaries`，优化安全标志为 false。
 
 当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
 支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限
