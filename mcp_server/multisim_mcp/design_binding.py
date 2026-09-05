@@ -201,6 +201,7 @@ def build_existing_design_snapshot(
         if not _looks_like_multisim_connectivity_report(netlist):
             raise
         design = circuit_design_from_multisim_report(netlist, title=name)
+    design = reconcile_multisim_report_artifacts(design, components=components)
     cross_validation = cross_validate_design_snapshot(
         design,
         components=components,
@@ -288,6 +289,41 @@ def _normalize_report_refdes(refdes: str) -> str:
 def _enumerated_component_names(values: list[Any]) -> set[str]:
     names = _enumerated_names(values)
     return {_normalize_report_refdes(item) for item in names}
+
+
+def reconcile_multisim_report_artifacts(
+    design: CircuitDesign, *, components: list[Any]
+) -> CircuitDesign:
+    """Exclude generated single-net report anchors that COM does not enumerate."""
+    report_meta = design.annotations.get("multisim_report", {})
+    if not isinstance(report_meta, Mapping) or report_meta.get("format") != "connectivity":
+        return design
+    enumerated = _enumerated_component_names(components)
+    kept: list[dict[str, Any]] = []
+    ignored: list[str] = []
+    for component in design.components:
+        raw_refdes = component.annotations.get("report_refdes", "")
+        is_anchor = (
+            isinstance(raw_refdes, str)
+            and raw_refdes.casefold().startswith("_uc")
+            and component.refdes.casefold() not in enumerated
+            and len(component.nodes) == 1
+        )
+        if is_anchor:
+            ignored.append(component.refdes)
+        else:
+            kept.append(component.to_dict())
+    if not ignored:
+        return design
+    payload = design.to_dict()
+    payload["components"] = kept
+    annotations = dict(payload.get("annotations") or {})
+    metadata = dict(report_meta)
+    metadata["ignored_connectivity_artifacts"] = ignored
+    metadata["ignored_connectivity_artifact_count"] = len(ignored)
+    annotations["multisim_report"] = metadata
+    payload["annotations"] = annotations
+    return CircuitDesign.from_dict(payload)
 
 
 def circuit_design_from_multisim_report(
@@ -471,6 +507,85 @@ def enrich_snapshot_with_com_parameters(
     return result
 
 
+def enrich_snapshot_with_native_metadata(
+    snapshot: Mapping[str, Any], metadata_evidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Attach hash-only native identity and port evidence to snapshot components."""
+    if not isinstance(snapshot, Mapping) or snapshot.get("kind") != DESIGN_SNAPSHOT_KIND:
+        raise ValueError("snapshot kind is invalid")
+    if not isinstance(metadata_evidence, Mapping):
+        raise ValueError("metadata_evidence must be an object")
+    raw_metadata = metadata_evidence.get("components", [])
+    if not isinstance(raw_metadata, list):
+        raise ValueError("metadata_evidence.components must be an array")
+    by_ref = {
+        str(item["refdes"]).casefold(): dict(item)
+        for item in raw_metadata
+        if isinstance(item, Mapping) and isinstance(item.get("refdes"), str)
+    }
+    design_payload = snapshot.get("design")
+    if not isinstance(design_payload, Mapping):
+        raise ValueError("snapshot.design is required")
+    updated_design = dict(design_payload)
+    raw_components = updated_design.get("components")
+    if not isinstance(raw_components, list):
+        raise ValueError("snapshot.design.components must be an array")
+    components: list[dict[str, Any]] = []
+    matched: list[str] = []
+    verified_models: list[str] = []
+    verified_pins: list[str] = []
+    for raw_component in raw_components:
+        if not isinstance(raw_component, Mapping):
+            raise ValueError("snapshot.design.components entries must be objects")
+        component = dict(raw_component)
+        refdes = str(component.get("refdes") or "")
+        metadata = by_ref.get(refdes.casefold())
+        if metadata is not None:
+            matched.append(refdes)
+            annotations = dict(component.get("annotations") or {})
+            report_pins = {
+                str(item).casefold()
+                for item in annotations.get("report_pins", [])
+                if isinstance(item, str) and item
+            }
+            native_pins = {
+                str(item).casefold()
+                for item in metadata.get("port_names", [])
+                if isinstance(item, str) and item
+            }
+            metadata["pin_inventory_verified"] = bool(
+                report_pins and native_pins and report_pins == native_pins
+            )
+            if metadata.get("model_verified") and metadata.get("model_name"):
+                component["model"] = str(metadata["model_name"])
+                verified_models.append(refdes)
+            if metadata["pin_inventory_verified"]:
+                verified_pins.append(refdes)
+            annotations["native_metadata"] = metadata
+            component["annotations"] = annotations
+        components.append(component)
+    updated_design["components"] = components
+    design = CircuitDesign.from_dict(updated_design)
+    result = dict(snapshot)
+    result["design"] = design.to_dict()
+    result["native_metadata_evidence"] = dict(metadata_evidence)
+    result["native_metadata_coverage"] = {
+        "design_components": len(components),
+        "matched": len(matched),
+        "components": matched,
+        "models_verified": verified_models,
+        "pin_inventories_verified": verified_pins,
+        "raw_model_material_included": False,
+    }
+    result["boundary_review"] = assess_snapshot_boundaries(design)
+    result.pop("snapshot_digest", None)
+    unsigned = dict(result)
+    for key in ("netlist_path", "snapshot_path", "export_result"):
+        unsigned.pop(key, None)
+    result["snapshot_digest"] = _digest(unsigned)
+    return result
+
+
 def _enumerated_names(values: list[Any]) -> set[str]:
     names: set[str] = set()
     for value in values:
@@ -530,7 +645,12 @@ def assess_snapshot_boundaries(design: CircuitDesign) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     for component in design.components:
         kind = component.kind.upper()
-        if kind in _MODEL_SENSITIVE_KINDS and not component.model:
+        native = component.annotations.get("native_metadata", {})
+        model_verified = isinstance(native, Mapping) and bool(native.get("model_verified"))
+        pins_verified = isinstance(native, Mapping) and bool(
+            native.get("pin_inventory_verified")
+        )
+        if kind in _MODEL_SENSITIVE_KINDS and not component.model and not model_verified:
             findings.append(
                 {
                     "refdes": component.refdes,
@@ -539,7 +659,7 @@ def assess_snapshot_boundaries(design: CircuitDesign) -> dict[str, Any]:
                     "message": "该器件依赖模型或载体参数，快照无法证明其内部模型与引脚映射。",
                 }
             )
-        if len(component.nodes) > 2 or kind in {"X", "U", "T", "O", "K"}:
+        if (len(component.nodes) > 2 or kind in {"X", "U", "T", "O", "K"}) and not pins_verified:
             findings.append(
                 {
                     "refdes": component.refdes,
@@ -592,7 +712,9 @@ __all__ = [
     "build_existing_design_snapshot",
     "circuit_design_from_multisim_report",
     "enrich_snapshot_with_com_parameters",
+    "enrich_snapshot_with_native_metadata",
     "load_existing_design_snapshot",
+    "reconcile_multisim_report_artifacts",
     "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
     "validate_snapshot_for_binding",

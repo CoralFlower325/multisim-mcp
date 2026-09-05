@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import threading
 import uuid
 from collections.abc import Mapping
@@ -85,8 +86,10 @@ from multisim_mcp.requirement_contract import (
 from multisim_mcp.design_binding import (
     build_existing_design_snapshot,
     enrich_snapshot_with_com_parameters,
+    enrich_snapshot_with_native_metadata,
     bind_requirement_review_to_design as build_requirement_binding,
 )
+from multisim_mcp.native_metadata import extract_native_component_metadata
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
 )
@@ -1617,6 +1620,37 @@ def snapshot_open_circuit(
                 }
             )
     snapshot = enrich_snapshot_with_com_parameters(snapshot, parameter_evidence)
+    source_file = Path(str(snapshot.get("source_file") or ""))
+    expected_refdes = {
+        str(component.get("refdes"))
+        for component in snapshot["design"].get("components", [])
+        if isinstance(component, Mapping) and component.get("refdes")
+    }
+    native_evidence: dict[str, Any]
+    try:
+        if source_file.is_symlink() or not source_file.is_file():
+            raise FileNotFoundError("open circuit source file is unavailable")
+        if source_file.suffix.casefold() != ".ms14":
+            raise ValueError("open circuit source is not an .ms14 file")
+        with tempfile.TemporaryDirectory(prefix="multisim-mcp-native-metadata-") as temp:
+            local_source = Path(temp) / "source.ms14"
+            local_xml = Path(temp) / "source.ms14.xml"
+            shutil.copy2(source_file, local_source)
+            codec.decode(str(local_source), str(local_xml))
+            native_evidence = extract_native_component_metadata(
+                str(local_xml), expected_refdes=expected_refdes
+            )
+    except Exception as exc:
+        native_evidence = {
+            "schema_version": 1,
+            "kind": "multisim-mcp-native-component-metadata",
+            "state": "unavailable",
+            "component_count": 0,
+            "components": [],
+            "error": str(exc)[:512],
+            "raw_model_material_included": False,
+        }
+    snapshot = enrich_snapshot_with_native_metadata(snapshot, native_evidence)
     snapshot["netlist_path"] = str(netlist_path)
     snapshot["snapshot_path"] = str(snapshot_path)
     snapshot["export_result"] = exported
