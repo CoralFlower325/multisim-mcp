@@ -3,8 +3,8 @@
 `bind_requirement_review_to_design` 是现有电路进入优化前的只读检查层。它接收一个
 `CircuitDesign` 快照和已经通过 `review_design_requirements` 的契约，检查需求中的信号
 是否能在快照的节点或元件中找到，并列出可进入有界参数优化的 R/C/L 元件。
-若同时传入 `snapshot_evidence`，工具会强制校验快照中的元件交叉校验和边界审查均已通过；
-这适合阻止调用者绕过 COM 导入审查直接提交裸设计对象。
+若同时传入 `snapshot_evidence`，工具会强制校验快照中的元件交叉校验和原生身份审查；
+仅“连接关系表缺少可执行参数”这一已知边界可进入原生 COM 规划，其余边界都会阻止绑定。
 
 ## 绑定规则
 
@@ -13,6 +13,8 @@
 - 其他信号文本：状态为 `needs-explicit-alias`，可通过 `signal_aliases` 映射到上述形式；
 - 绑定只读，不写回 `.ms14`、源网表、输入输出配置或仿真状态；
 - `contract_digest` 会被带入绑定结果，绑定结果自身也有 `binding_digest`。
+- 带有原生快照时，结果还会返回 `native_optimization_readiness`，列出可通过 COM
+  `SetRLCValue` 扫描的候选，并要求运行时门禁、显式审批和恢复原值。
 
 ## 返回状态
 
@@ -67,6 +69,10 @@ workflows. Arbitrary `.ms14` parsing remains a separate, audited importer bounda
 For R/C/L entries in a connectivity report, `snapshot_open_circuit` also records verified COM
 `RLCValue` readings in `parameter_evidence`; this improves parameter visibility without
 silently approving missing models or hidden pins.
+When a verified native snapshot is supplied, the binding also returns
+`native_optimization_readiness` for a future COM `SetRLCValue` sweep. The plan requires a
+runtime gate, explicit approval, and restoration of original values; missing native evidence
+keeps the state at `manual-review-required`.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.

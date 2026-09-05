@@ -120,6 +120,45 @@ out Demo U1 OUT
         self.assertNotIn("hidden_pin_mapping_unverified", codes)
         self.assertIn("connectivity_report_missing_parameters", codes)
 
+    def test_native_optimization_readiness_allows_connectivity_only_boundary(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            """_ucTitle
+----
+in Demo R1 1
+out Demo R1 2
+in Demo U1 IN+
+out Demo U1 OUT
+""",
+            circuit_info={"name": "Native"},
+            components=["R1", "U1"],
+            inputs=[],
+            outputs=[],
+        )
+        snapshot = enrich_snapshot_with_com_parameters(
+            snapshot, [{"component": "R1", "value": 1000.0}]
+        )
+        snapshot = enrich_snapshot_with_native_metadata(
+            snapshot,
+            {
+                "state": "verified",
+                "components": [
+                    {"refdes": "R1", "model_name": "VIRTUAL_RESISTANCE", "model_verified": True, "port_names": ["1", "2"]},
+                    {"refdes": "U1", "model_name": "5T_Virtual", "model_verified": True, "port_names": ["IN+", "OUT"]},
+                ],
+            },
+        )
+        review = review_design_requirements(
+            [{"id": "out", "metric": "mean", "signal": "V(out)", "operator": "at_least", "target": 1.0, "unit": "V"}]
+        )
+        bound = bind_requirement_review_to_design(
+            CircuitDesign.from_dict(snapshot["design"]), review, snapshot_evidence=snapshot
+        )
+        self.assertEqual(
+            bound["native_optimization_readiness"]["state"],
+            "ready-for-com-parameter-sweep",
+        )
+        self.assertTrue(bound["native_optimization_readiness"]["requires_approval"])
+
     def test_parses_multisim_fixed_width_connectivity_report_as_bounded_topology(self) -> None:
         report = """_ucTitle (encoded, 12:00:00)
 ----
