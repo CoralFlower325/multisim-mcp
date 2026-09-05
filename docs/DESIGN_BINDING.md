@@ -36,6 +36,9 @@ Multisim 14.x 的默认 `fmt=0` 可能返回连接关系表而非 SPICE；系统
 快照同时写入 `snapshot_digest`。后续进程可调用 Python API
 `load_existing_design_snapshot(path)` 重新加载；它会限制文件大小、拒绝符号链接，
 并在返回 `CircuitDesign` 前校验摘要，服务器追加的输出路径等临时字段不会影响校验。
+对连接关系表中的 R/C/L 元件，`snapshot_open_circuit` 还会通过 COM `RLCValue` 补回
+实际数值，并在 `parameter_evidence` / `parameter_coverage` 中记录成功和失败；这只补
+参数证据，不会自动放宽模型、隐藏引脚或未命名元件的人工审查门禁。
 
 当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
 支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限
@@ -55,3 +58,6 @@ explicit signal aliases, and reports bounded R/C/L value candidates. It does not
 netlists, simulator state, or source files. Persisted snapshots carry a digest and can be
 reloaded with `load_existing_design_snapshot(path)` for integrity-checked, cross-process
 workflows. Arbitrary `.ms14` parsing remains a separate, audited importer boundary.
+For R/C/L entries in a connectivity report, `snapshot_open_circuit` also records verified COM
+`RLCValue` readings in `parameter_evidence`; this improves parameter visibility without
+silently approving missing models or hidden pins.

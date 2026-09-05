@@ -6,6 +6,7 @@ import hashlib
 import json
 import csv
 import io
+import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -403,6 +404,73 @@ def load_existing_design_snapshot(path: str) -> tuple[dict[str, Any], CircuitDes
     return dict(snapshot), design
 
 
+def enrich_snapshot_with_com_parameters(
+    snapshot: Mapping[str, Any], parameter_evidence: list[Any]
+) -> dict[str, Any]:
+    """Merge verified COM R/L/C values into a snapshot without mutating source."""
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("snapshot must be an object")
+    if snapshot.get("kind") != DESIGN_SNAPSHOT_KIND:
+        raise ValueError("snapshot kind is invalid")
+    if not isinstance(parameter_evidence, list):
+        raise ValueError("parameter_evidence must be an array")
+    design_payload = snapshot.get("design")
+    if not isinstance(design_payload, Mapping):
+        raise ValueError("snapshot.design is required")
+    updated_design = dict(design_payload)
+    raw_components = updated_design.get("components")
+    if not isinstance(raw_components, list):
+        raise ValueError("snapshot.design.components must be an array")
+    components = [dict(item) for item in raw_components if isinstance(item, Mapping)]
+    values: dict[str, float] = {}
+    normalized_evidence: list[dict[str, Any]] = []
+    for record in parameter_evidence:
+        if not isinstance(record, Mapping):
+            continue
+        refdes = record.get("component", record.get("refdes"))
+        value = record.get("value")
+        state = record.get("state", "verified")
+        if not isinstance(refdes, str) or not refdes.strip():
+            continue
+        item: dict[str, Any] = {"component": refdes.strip(), "state": str(state)}
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+            values[refdes.casefold()] = float(value)
+            item["value"] = float(value)
+        if "error" in record:
+            item["error"] = str(record["error"])[:512]
+        normalized_evidence.append(item)
+    applied: list[str] = []
+    for component in components:
+        refdes = component.get("refdes")
+        kind = str(component.get("kind") or "").upper()
+        if isinstance(refdes, str) and kind in {"R", "C", "L"}:
+            value = values.get(refdes.casefold())
+            if value is not None:
+                component["value"] = format(value, ".12g")
+                applied.append(refdes)
+    updated_design["components"] = components
+    design = CircuitDesign.from_dict(updated_design)
+    result = dict(snapshot)
+    result["design"] = design.to_dict()
+    result["parameter_evidence"] = normalized_evidence
+    result["parameter_coverage"] = {
+        "requested": sum(
+            1
+            for component in components
+            if str(component.get("kind") or "").upper() in {"R", "C", "L"}
+        ),
+        "verified": len(applied),
+        "components": applied,
+    }
+    result["boundary_review"] = assess_snapshot_boundaries(design)
+    result.pop("snapshot_digest", None)
+    unsigned = dict(result)
+    for key in ("netlist_path", "snapshot_path", "export_result"):
+        unsigned.pop(key, None)
+    result["snapshot_digest"] = _digest(unsigned)
+    return result
+
+
 def _enumerated_names(values: list[Any]) -> set[str]:
     names: set[str] = set()
     for value in values:
@@ -523,6 +591,7 @@ __all__ = [
     "DESIGN_BINDING_SCHEMA_VERSION",
     "build_existing_design_snapshot",
     "circuit_design_from_multisim_report",
+    "enrich_snapshot_with_com_parameters",
     "load_existing_design_snapshot",
     "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
