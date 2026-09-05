@@ -73,6 +73,8 @@ Stable and verified on Multisim 14.3:
 - `run_native_parameter_sweep` executes an explicitly approved, bounded DC/
   transient/AC grid against the open circuit's R/L/C values and restores every
   original value even when a run fails; it never saves the source `.ms14`.
+- `rank_native_sweep_results` scores the returned records against one explicit
+  signal objective and produces a deterministic, digest-protected ranking.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs

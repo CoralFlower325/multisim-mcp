@@ -89,7 +89,10 @@ from multisim_mcp.design_binding import (
     enrich_snapshot_with_native_metadata,
     bind_requirement_review_to_design as build_requirement_binding,
 )
-from multisim_mcp.native_sweep import prepare_native_sweep
+from multisim_mcp.native_sweep import (
+    prepare_native_sweep,
+    rank_native_sweep_results as rank_native_sweep_records,
+)
 from multisim_mcp.native_metadata import extract_native_component_metadata
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
@@ -1754,6 +1757,14 @@ def run_native_parameter_sweep(
         "in_memory_mutated": True,
         "next_step": "review_sweep_results" if execution_error is None and restored else "repair_restore_failure",
     }
+
+
+@mcp.tool(com_serialized=False)
+def rank_native_sweep_results(
+    sweep_result: Mapping[str, Any], objective: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Rank completed native sweep records against an explicit scalar objective."""
+    return rank_native_sweep_records(sweep_result, objective)
 
 
 @mcp.tool()

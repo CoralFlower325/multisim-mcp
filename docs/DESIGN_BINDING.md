@@ -18,6 +18,8 @@
 - 就绪对象包含 `readiness_digest`；扫描器会在执行前重新计算摘要，拒绝被调用方篡改的候选或状态。
 - `run_native_parameter_sweep` 接收该就绪报告和审批对象，执行受限 DC/瞬态/AC 参数网格；
   它只在当前内存工程中临时改值，结束或异常时恢复全部原值，不调用 `Save`/`SaveAs`。
+- `rank_native_sweep_results` 可按一个明确的信号目标对扫描记录评分排序，结果带有摘要，
+  但不会修改工程或自动写入最佳参数。
 
 ## 返回状态
 
@@ -79,6 +81,9 @@ keeps the state at `manual-review-required`.
 `run_native_parameter_sweep` consumes that readiness report and an explicit approval to execute
 a bounded DC/transient/AC grid. It changes values only in the open in-memory circuit, always
 restores the original values, and never calls `Save` or `SaveAs`.
+`rank_native_sweep_results` then applies one explicit scalar objective to the returned records,
+producing a deterministic digest-protected ranking without mutating the circuit or persisting a
+best-value patch.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.
