@@ -79,6 +79,7 @@ from multisim_mcp.design_plans import (
     select_design_option as select_planned_design_option,
 )
 from multisim_mcp.requirement_contract import (
+    apply_requirement_review_to_optimization_spec,
     review_design_requirements as build_requirement_review,
 )
 from multisim_mcp.design_specifications import (
@@ -2325,19 +2326,27 @@ def optimize_design(
     output_dir: str,
     timeout_per_experiment: float = 120.0,
     max_points: int = 2000,
+    requirement_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate bounded component-value candidates without modifying the source design.
 
-    The baseline consumes one experiment from ``spec.max_experiments``. Values
+    The baseline consumes one experiment from ``spec.max_experiments``. When
+    ``requirement_review`` is supplied, its verified hard constraints and a
+    uniquely matched soft objective fill the spec before validation. Values
     may be explicit or generated from bounded E12/E24/E48/E96 ranges. Electrical,
     optional in-stock, and maximum variable-cost rules are hard constraints;
     failed/unverified candidates are never feasible, and the returned best patch
     still requires the separate local approval workflow before persistence.
     """
     normalized_design = CircuitDesign.from_dict(design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(spec, requirement_review)
+        if requirement_review is not None
+        else spec
+    )
     return _design_optimization_service().run(
         normalized_design,
-        spec,
+        effective_spec,
         output_dir,
         timeout_per_experiment=timeout_per_experiment,
         max_points=max_points,
@@ -2351,18 +2360,30 @@ def global_optimize_design(
     output_dir: str,
     timeout_per_experiment: float = 120.0,
     max_points: int = 2000,
+    requirement_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run auditable mixed topology/value multi-objective global optimization.
 
+    When ``requirement_review`` is supplied, its verified hard constraints and
+    matched soft objectives fill the multi-objective spec before validation.
     Small declared domains are exhaustive; larger domains use deterministic
     Halton space filling. Every candidate runs a real verified experiment,
     failed hard constraints are excluded, and the result contains an
     epsilon-aware Pareto front. No candidate is persisted automatically.
     """
     normalized_design = CircuitDesign.from_dict(design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(
+            spec,
+            requirement_review,
+            global_mode=True,
+        )
+        if requirement_review is not None
+        else spec
+    )
     return _global_optimization_service().run(
         normalized_design,
-        spec,
+        effective_spec,
         output_dir,
         timeout_per_experiment=timeout_per_experiment,
         max_points=max_points,

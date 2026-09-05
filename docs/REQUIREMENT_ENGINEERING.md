@@ -73,6 +73,8 @@
 绑定关系。该交接包不会启动优化，也不会改变原需求。
 后续流程接收 JSON 前可调用 `validate_requirement_review` 校验 `contract_digest`；摘要不匹配
 时必须退回重新审查，不能继续使用被修改的交接包。
+`optimize_design` 和 `global_optimize_design` 接收该交接包后，可分别自动填充单目标或多目标
+规范；冲突、未匹配或多重匹配会在仿真开始前失败关闭。
 
 ## 与优化流程的衔接
 
