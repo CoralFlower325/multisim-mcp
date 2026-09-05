@@ -83,6 +83,97 @@ def _interval(item: Mapping[str, Any]) -> tuple[float, float]:
     return target - allowance, target + allowance
 
 
+def _relaxation_suggestions(
+    items: Sequence[Mapping[str, Any]], lower: float, upper: float
+) -> list[dict[str, Any]]:
+    """Suggest the smallest bound changes that could restore an interval.
+
+    Suggestions are deliberately local and conservative.  They do not assert
+    physical feasibility and are only intended to help a user decide which
+    requirement to review before running a new baseline experiment.
+    """
+    suggestions: list[dict[str, Any]] = []
+    for item in items:
+        operator = item["operator"]
+        identifier = item["id"]
+        item_low, item_high = _interval(item)
+        if item_low > upper:
+            if operator == "at_least" and math.isfinite(upper):
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "target",
+                        "current": item["target"],
+                        "suggested": upper,
+                        "reason": "降低最低值，使其不高于其他硬约束的上限",
+                    }
+                )
+            elif operator == "between" and math.isfinite(upper):
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "lower",
+                        "current": item["lower"],
+                        "suggested": upper,
+                        "reason": "降低区间下限，使其与其他硬约束相交",
+                    }
+                )
+            elif operator == "approximately" and math.isfinite(upper):
+                needed = abs(float(item["target"]) - upper)
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "tolerance_abs",
+                        "current": item.get("tolerance_abs"),
+                        "suggested": needed,
+                        "reason": "增大允许误差，使目标区间覆盖其他硬约束上限",
+                    }
+                )
+        if item_high < lower:
+            if operator == "at_most" and math.isfinite(lower):
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "target",
+                        "current": item["target"],
+                        "suggested": lower,
+                        "reason": "提高最高值，使其不低于其他硬约束的下限",
+                    }
+                )
+            elif operator == "between" and math.isfinite(lower):
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "upper",
+                        "current": item["upper"],
+                        "suggested": lower,
+                        "reason": "提高区间上限，使其与其他硬约束相交",
+                    }
+                )
+            elif operator == "approximately" and math.isfinite(lower):
+                needed = abs(lower - float(item["target"]))
+                suggestions.append(
+                    {
+                        "id": identifier,
+                        "field": "tolerance_abs",
+                        "current": item.get("tolerance_abs"),
+                        "suggested": needed,
+                        "reason": "增大允许误差，使目标区间覆盖其他硬约束下限",
+                    }
+                )
+    # Keep the result deterministic and bounded when many constraints share a
+    # signal.  Duplicates can arise when two equivalent bounds are declared.
+    unique: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for suggestion in suggestions:
+        key = (
+            suggestion["id"],
+            suggestion["field"],
+            json.dumps(suggestion.get("suggested"), ensure_ascii=False, sort_keys=True),
+        )
+        unique.setdefault(key, suggestion)
+    return list(unique.values())[:16]
+
+
 def _normalise_preferences(value: object) -> list[dict[str, Any]]:
     if value is None:
         return []
@@ -249,6 +340,7 @@ def review_design_requirements(
         identifiers.add(item["id"])
 
     conflicts: list[dict[str, Any]] = []
+    relaxation_suggestions: list[dict[str, Any]] = []
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for item in normalized_hard:
         grouped.setdefault(_identity(item), []).append(item)
@@ -256,6 +348,8 @@ def review_design_requirements(
         lower = max(_interval(item)[0] for item in items)
         upper = min(_interval(item)[1] for item in items)
         if lower > upper:
+            suggestions = _relaxation_suggestions(items, lower, upper)
+            relaxation_suggestions.extend(suggestions)
             conflicts.append(
                 {
                     "type": "non_overlapping_hard_constraints",
@@ -264,6 +358,7 @@ def review_design_requirements(
                     "signal": identity[1],
                     "unit": identity[2],
                     "intersection": None,
+                    "relaxation_suggestions": suggestions,
                     "message": "同一测量信号的硬约束没有共同可行区间",
                 }
             )
@@ -297,6 +392,7 @@ def review_design_requirements(
         "preferences": prefs,
         "assumptions": normalized_assumptions,
         "conflicts": conflicts,
+        "relaxation_suggestions": relaxation_suggestions,
         "warnings": warnings,
         "simulation_started": False,
         "artifacts_generated": [],

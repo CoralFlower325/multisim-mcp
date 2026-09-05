@@ -81,6 +81,13 @@ class RequirementContractTest(unittest.TestCase):
         self.assertEqual(result["state"], "conflict")
         self.assertEqual(result["next_step"], "resolve_conflicts_before_baseline")
         self.assertEqual(result["conflicts"][0]["ids"], ["low", "high"])
+        suggestions = result["relaxation_suggestions"]
+        self.assertEqual(len(suggestions), 2)
+        self.assertEqual(
+            {(item["id"], item["field"], item["suggested"]) for item in suggestions},
+            {("low", "target", 4.0), ("high", "target", 5.0)},
+        )
+        self.assertEqual(result["conflicts"][0]["relaxation_suggestions"], suggestions)
         self.assertFalse(result["simulation_started"])
 
     def test_rejects_duplicate_ids_and_invalid_objective(self) -> None:
