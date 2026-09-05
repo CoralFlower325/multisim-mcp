@@ -66,6 +66,12 @@
 替代硬约束。每个冲突也会给出 `relaxation_suggestions`，表示使区间刚好相交的最小边界调整；
 它们只是需求评审候选，不会自动修改电路或自动放宽约束，采纳后必须重新运行基线实验。
 
+返回值还包含 `optimization_handoff`。当软目标与唯一一个硬测量的
+`metric`、`signal`、`unit` 完全匹配时，会生成 `single_objective_candidates` 和
+`multi_objective_candidates`，可作为 `optimize_design` / `global_optimize_design`
+规范的起点；没有匹配或匹配多个时会进入 `unmapped_objectives`，需要人工补充测量或
+绑定关系。该交接包不会启动优化，也不会改变原需求。
+
 ## 与优化流程的衔接
 
 ```text
@@ -86,4 +92,6 @@ review_design_requirements
 constraints, soft objectives, preferences, and assumptions, validates the existing
 measurement contract, and detects obvious contradictory bounds for one signal. Conflicts
 include conservative minimum-relaxation candidates for human review. A clean contract is
-not a proof of physical feasibility; simulation and approval remain separate steps.
+not a proof of physical feasibility. Matching soft objectives are projected into an explicit
+optimizer handoff, while ambiguous objectives remain for human review; simulation and
+approval remain separate steps.

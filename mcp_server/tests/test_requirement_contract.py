@@ -56,6 +56,41 @@ class RequirementContractTest(unittest.TestCase):
         self.assertAlmostEqual(result["soft_objectives"][0]["weight"], 2 / 3, places=6)
         self.assertEqual(result["assumptions"], ["输入源为理想直流源"])
         self.assertRegex(result["contract_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(result["optimization_handoff"]["state"], "partial")
+        self.assertEqual(
+            [item["objective_id"] for item in result["optimization_handoff"]["unmapped_objectives"]],
+            ["power", "ripple"],
+        )
+
+    def test_builds_optimizer_handoff_for_matching_measurement(self) -> None:
+        result = review_design_requirements(
+            _voltage_constraints(),
+            soft_objectives=[
+                {
+                    "id": "center-output",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "goal": "target",
+                    "target": 5.0,
+                    "unit": "V",
+                }
+            ],
+        )
+        handoff = result["optimization_handoff"]
+        self.assertEqual(handoff["state"], "ready")
+        self.assertEqual(
+            handoff["single_objective_candidates"],
+            [
+                {
+                    "objective_id": "center-output",
+                    "requirement_id": "vout-range",
+                    "goal": "target",
+                    "target": 5.0,
+                    "weight": 1.0,
+                }
+            ],
+        )
+        self.assertEqual(handoff["multi_objective_candidates"][0]["epsilon"], 0.0)
 
     def test_detects_non_overlapping_same_signal_constraints(self) -> None:
         result = review_design_requirements(
