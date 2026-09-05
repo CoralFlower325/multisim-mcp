@@ -30,6 +30,9 @@
 `next_step` 为 `review_snapshot_mismatch`，不能直接进入需求绑定。
 `boundary_review` 会额外标出模型缺失、多端/耦合器件隐藏引脚以及未结构化网表记录；
 存在这些发现时，下一步为 `review_snapshot_boundaries`，优化安全标志为 false。
+快照同时写入 `snapshot_digest`。后续进程可调用 Python API
+`load_existing_design_snapshot(path)` 重新加载；它会限制文件大小、拒绝符号链接，
+并在返回 `CircuitDesign` 前校验摘要，服务器追加的输出路径等临时字段不会影响校验。
 
 当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
 支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限
@@ -43,5 +46,6 @@ worker into a new directory, parses the reported netlist, and preserves enumerat
 `bind_requirement_review_to_design` is a read-only pre-optimization binding layer. It matches
 `V(node)` and `I(refdes)` requests against a validated `CircuitDesign` snapshot, accepts
 explicit signal aliases, and reports bounded R/C/L value candidates. It does not edit `.ms14`,
-netlists, simulator state, or source files. Arbitrary `.ms14` parsing remains a separate,
-audited importer boundary.
+netlists, simulator state, or source files. Persisted snapshots carry a digest and can be
+reloaded with `load_existing_design_snapshot(path)` for integrity-checked, cross-process
+workflows. Arbitrary `.ms14` parsing remains a separate, audited importer boundary.
