@@ -10,6 +10,7 @@ contract is internally coherent, not that a circuit is physically feasible.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import re
@@ -474,6 +475,33 @@ def review_design_requirements(
     return envelope
 
 
+def validate_requirement_review(review: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an immutable requirement-review envelope before handoff.
+
+    The digest protects the review boundary when a client stores or forwards
+    the JSON between planning and optimization. It is an integrity check, not
+    a proof that the circuit can satisfy the contract.
+    """
+    if not isinstance(review, Mapping):
+        raise ValueError("requirement review must be an object")
+    supplied = review.get("contract_digest")
+    if not isinstance(supplied, str) or not re.fullmatch(r"[0-9a-f]{64}", supplied):
+        raise ValueError("requirement review contract_digest is invalid")
+    payload = dict(review)
+    payload.pop("contract_digest", None)
+    expected = _digest(payload)
+    if not hmac.compare_digest(supplied, expected):
+        raise ValueError("requirement review digest mismatch")
+    if payload.get("schema_version") != REQUIREMENT_CONTRACT_SCHEMA_VERSION:
+        raise ValueError("unsupported requirement review schema_version")
+    if payload.get("kind") != REQUIREMENT_CONTRACT_KIND:
+        raise ValueError("invalid requirement review kind")
+    state = payload.get("state")
+    if state not in {"conflict", "ready-for-baseline", "needs-input"}:
+        raise ValueError("invalid requirement review state")
+    return dict(review)
+
+
 __all__ = [
     "MAX_ASSUMPTIONS",
     "MAX_HARD_CONSTRAINTS",
@@ -482,4 +510,5 @@ __all__ = [
     "REQUIREMENT_CONTRACT_KIND",
     "REQUIREMENT_CONTRACT_SCHEMA_VERSION",
     "review_design_requirements",
+    "validate_requirement_review",
 ]

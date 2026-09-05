@@ -5,7 +5,10 @@ from __future__ import annotations
 import unittest
 
 from multisim_mcp import server
-from multisim_mcp.requirement_contract import review_design_requirements
+from multisim_mcp.requirement_contract import (
+    review_design_requirements,
+    validate_requirement_review,
+)
 
 
 def _voltage_constraints() -> list[dict[str, object]]:
@@ -165,6 +168,14 @@ class RequirementContractTest(unittest.TestCase):
         )
         self.assertEqual(result["kind"], "multisim-mcp-requirement-review")
         self.assertFalse(result["simulation_started"])
+
+    def test_validates_review_digest_before_handoff(self) -> None:
+        review = review_design_requirements(_voltage_constraints())
+        self.assertEqual(validate_requirement_review(review)["contract_digest"], review["contract_digest"])
+        tampered = dict(review)
+        tampered["summary"] = "changed after approval"
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            validate_requirement_review(tampered)
 
 
 if __name__ == "__main__":
