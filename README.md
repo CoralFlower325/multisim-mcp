@@ -50,7 +50,8 @@ MIT 代码授权范围，公开仓库默认不应包含这些文件。用户需�
 `prepare_native_sweep_patch` 会把最佳候选转换为现有审批体系可处理的标准可逆 `DesignPatch`。
 通过显式审批后，`apply_native_sweep_patch_to_copy` 只写入新的 `.ms14` 副本，并重新打开源工程。
 `compare_native_sweep_baseline` 会自动识别原始参数组并计算改进量；
-`export_native_sweep_report` 导出中文为主的 Markdown、JSON 和 SHA-256 清单。
+`export_native_sweep_report` 导出中文为主的 Markdown、JSON 和 SHA-256 清单；传入已批准生成的
+`.ms14` 副本后，还会把优化工程复制到报告目录并建立相对链接，形成可移交的证据包。
 
 ## 已实现的完整闭环
 

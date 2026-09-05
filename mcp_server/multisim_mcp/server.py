@@ -1877,10 +1877,12 @@ def compare_native_sweep_baseline(ranking: Mapping[str, Any]) -> dict[str, Any]:
 
 @mcp.tool(com_serialized=False)
 def export_native_sweep_report(
-    comparison: Mapping[str, Any], output_dir: str
+    comparison: Mapping[str, Any],
+    output_dir: str,
+    optimized_copy_path: str | None = None,
 ) -> dict[str, Any]:
     """Export a bilingual native sweep comparison report and integrity manifest."""
-    return write_native_sweep_report(comparison, output_dir)
+    return write_native_sweep_report(comparison, output_dir, optimized_copy_path)
 
 
 @mcp.tool()
