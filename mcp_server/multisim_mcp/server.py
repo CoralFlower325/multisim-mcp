@@ -82,6 +82,9 @@ from multisim_mcp.requirement_contract import (
     apply_requirement_review_to_optimization_spec,
     review_design_requirements as build_requirement_review,
 )
+from multisim_mcp.design_binding import (
+    bind_requirement_review_to_design as build_requirement_binding,
+)
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
 )
@@ -970,6 +973,26 @@ def review_design_requirements(
         assumptions=assumptions,
         summary=summary,
         title=title,
+    )
+
+
+@mcp.tool(com_serialized=False)
+def bind_requirement_review_to_design(
+    design: dict[str, Any],
+    requirement_review: dict[str, Any],
+    signal_aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Bind reviewed requirements to an existing design snapshot without edits.
+
+    Voltage and current signals are matched against design nets and component
+    references. Unrecognised signal text is reported for explicit aliasing;
+    no .ms14 file, source netlist, or simulation state is modified.
+    """
+    normalized_design = CircuitDesign.from_dict(design)
+    return build_requirement_binding(
+        normalized_design,
+        requirement_review,
+        signal_aliases=signal_aliases,
     )
 
 
