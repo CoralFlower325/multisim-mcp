@@ -93,7 +93,9 @@ from multisim_mcp.native_sweep import (
     prepare_native_sweep,
     prepare_native_sweep_patch as build_native_sweep_patch,
     rank_native_sweep_results as rank_native_sweep_records,
+    validate_native_sweep_patch_draft,
 )
+from multisim_mcp.preferred_values import parse_spice_scalar
 from multisim_mcp.native_metadata import extract_native_component_metadata
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
@@ -1776,6 +1778,88 @@ def prepare_native_sweep_patch(
 ) -> dict[str, Any]:
     """Prepare a standard reversible DesignPatch from the best native sweep result."""
     return build_native_sweep_patch(readiness, ranking)
+
+
+@mcp.tool(com_serialized=False)
+def apply_native_sweep_patch_to_copy(
+    draft: Mapping[str, Any], output_path: str, approval: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply an approved native sweep patch to a new .ms14 copy and reopen the source."""
+    verified = validate_native_sweep_patch_draft(draft)
+    if not isinstance(approval, Mapping):
+        raise ValueError("approval must be an object")
+    allowed = {"approved", "write_copy", "reopen_source", "preserve_source", "source_saved", "draft_digest", "review_note"}
+    unknown = set(approval) - allowed
+    if unknown:
+        raise ValueError(f"approval contains unknown fields: {sorted(unknown)}")
+    for key in ("approved", "write_copy", "reopen_source", "preserve_source", "source_saved"):
+        if approval.get(key) is not True:
+            raise ValueError(f"approval.{key} must be true")
+    if approval.get("draft_digest") != verified["draft_digest"]:
+        raise ValueError("approval.draft_digest does not match the draft")
+    if not isinstance(output_path, str) or not output_path.strip() or "\x00" in output_path:
+        raise ValueError("output_path must be a non-empty path")
+    source = Path(str(verified["circuit"]["file"])).expanduser().resolve()
+    destination = Path(output_path).expanduser().resolve()
+    if source == destination:
+        raise ValueError("output_path must differ from the source circuit")
+    if source.suffix.casefold() != ".ms14" or destination.suffix.casefold() != ".ms14":
+        raise ValueError("source and output paths must end with .ms14")
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("source circuit must be an existing regular file")
+    if destination.exists():
+        raise FileExistsError(f"refusing to overwrite existing output: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    current = client.circuit_info()
+    current_file = Path(str(current.get("file", ""))).expanduser().resolve()
+    if current_file != source:
+        raise ValueError("the open Multisim circuit does not match the approved draft source")
+    patch = verified["_patch"]
+    originals: dict[str, float] = {}
+    for operation in patch.operations:
+        refdes = operation.target.removesuffix(".value")
+        measured = client.get_rlc_value(refdes)
+        value = measured.get("value") if isinstance(measured, Mapping) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"unable to read a finite COM value for {refdes}")
+        expected = float(parse_spice_scalar(str(operation.before)))
+        if not math.isclose(float(value), expected, rel_tol=1e-9, abs_tol=1e-18):
+            raise ValueError(f"current COM value for {refdes} does not match the approved before value")
+        originals[refdes] = float(value)
+    opened_copy = False
+    saved_copy = False
+    reopened_source = False
+    execution_error: str | None = None
+    try:
+        shutil.copy2(source, destination)
+        client.open_circuit(str(destination))
+        opened_copy = True
+        for operation in patch.operations:
+            refdes = operation.target.removesuffix(".value")
+            client.set_rlc_value(refdes, float(parse_spice_scalar(str(operation.after))))
+        client.save_circuit()
+        saved_copy = True
+    except Exception as exc:
+        execution_error = str(exc)[:1024]
+    finally:
+        if opened_copy and approval.get("reopen_source") is True:
+            try:
+                client.open_circuit(str(source))
+                reopened_source = True
+            except Exception as exc:
+                execution_error = execution_error or str(exc)[:1024]
+    return {
+        "state": "completed" if saved_copy and reopened_source and execution_error is None else "failed",
+        "source_path": str(source),
+        "output_path": str(destination),
+        "saved_copy": saved_copy,
+        "reopened_source": reopened_source,
+        "source_mutated": False,
+        "unsaved_source_changes_preserved": False,
+        "original_values": originals,
+        "error": execution_error,
+        "next_step": "verify_native_patch_copy" if saved_copy and reopened_source and execution_error is None else "inspect_failed_copy",
+    }
 
 
 @mcp.tool()
