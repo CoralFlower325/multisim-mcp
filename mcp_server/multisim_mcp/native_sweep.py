@@ -7,7 +7,34 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any
+
+from .eda_core import DesignPatch, PatchOperation
+from .preferred_values import format_spice_scalar, parse_spice_scalar
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_embedded_digest(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    digest = value.get(field)
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValueError(f"value must include a valid {field}")
+    unsigned = dict(value)
+    unsigned.pop(field, None)
+    if digest != _digest(unsigned):
+        raise ValueError(f"{field} does not match value")
+    return dict(value)
 
 
 def prepare_native_sweep(
@@ -20,22 +47,7 @@ def prepare_native_sweep(
     """Validate approval/readiness and expand bounded candidate value grids."""
     if not isinstance(readiness, Mapping) or readiness.get("state") != "ready-for-com-parameter-sweep":
         raise ValueError("readiness must be ready-for-com-parameter-sweep")
-    readiness_digest = readiness.get("readiness_digest")
-    if not isinstance(readiness_digest, str) or len(readiness_digest) != 64:
-        raise ValueError("readiness must include a valid readiness_digest")
-    unsigned_readiness = dict(readiness)
-    unsigned_readiness.pop("readiness_digest", None)
-    expected_digest = hashlib.sha256(
-        json.dumps(
-            unsigned_readiness,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    if readiness_digest != expected_digest:
-        raise ValueError("readiness_digest does not match readiness")
+    _validate_embedded_digest(readiness, "readiness_digest")
     if not isinstance(approval, Mapping):
         raise ValueError("approval must be an object")
     allowed = {"approved", "runtime_gate", "restore_original_values", "review_note"}
@@ -199,10 +211,102 @@ def rank_native_sweep_results(
         "best": ranked[0] if ranked else None,
         "source_mutated": False,
     }
-    payload["ranking_digest"] = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    original_values = sweep_result.get("original_values")
+    if isinstance(original_values, Mapping):
+        payload["original_values"] = dict(original_values)
+    circuit = sweep_result.get("circuit")
+    if isinstance(circuit, Mapping):
+        payload["circuit"] = dict(circuit)
+    payload["ranking_digest"] = _digest(payload)
     return payload
 
 
-__all__ = ["prepare_native_sweep", "rank_native_sweep_results"]
+def prepare_native_sweep_patch(
+    readiness: Mapping[str, Any], ranking: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Convert the best verified native result into a standard reversible DesignPatch."""
+    if not isinstance(readiness, Mapping) or readiness.get("state") != "ready-for-com-parameter-sweep":
+        raise ValueError("readiness must be ready-for-com-parameter-sweep")
+    verified_readiness = _validate_embedded_digest(readiness, "readiness_digest")
+    if not isinstance(ranking, Mapping) or ranking.get("state") != "completed":
+        raise ValueError("ranking must be a completed native sweep ranking")
+    verified_ranking = _validate_embedded_digest(ranking, "ranking_digest")
+    design_id = verified_readiness.get("design_id")
+    revision = verified_readiness.get("design_revision")
+    if not isinstance(design_id, str) or not design_id.strip():
+        raise ValueError("readiness.design_id is required")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise ValueError("readiness.design_revision must be a non-negative integer")
+    best = verified_ranking.get("best")
+    originals = verified_ranking.get("original_values")
+    if not isinstance(best, Mapping) or not isinstance(best.get("parameters"), Mapping):
+        raise ValueError("ranking.best.parameters is required")
+    if not isinstance(originals, Mapping):
+        raise ValueError("ranking.original_values is required")
+    allowed = {
+        str(item.get("refdes") or item.get("target", "")).removesuffix(".value").casefold(): item
+        for item in verified_readiness.get("candidates", [])
+        if isinstance(item, Mapping)
+    }
+    operations: list[PatchOperation] = []
+    for refdes, after in best["parameters"].items():
+        if not isinstance(refdes, str) or refdes.casefold() not in allowed:
+            raise ValueError(f"ranked parameter {refdes!r} is not an approved readiness candidate")
+        original_numeric = originals.get(refdes)
+        if original_numeric is None:
+            original_numeric = next(
+                (value for key, value in originals.items() if isinstance(key, str) and key.casefold() == refdes.casefold()),
+                None,
+            )
+        for label, value in (("before", original_numeric), ("after", after)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
+                raise ValueError(f"{refdes} {label} value must be a positive finite number")
+        before = allowed[refdes.casefold()].get("value")
+        if not isinstance(before, str) or not before.strip():
+            raise ValueError(f"readiness candidate {refdes} must preserve its design value text")
+        before_numeric = float(parse_spice_scalar(before.strip()))
+        if not math.isclose(before_numeric, float(original_numeric), rel_tol=1e-9, abs_tol=1e-18):
+            raise ValueError(f"readiness candidate {refdes} does not match the measured COM value")
+        if float(original_numeric) == float(after):
+            continue
+        operations.append(
+            PatchOperation(
+                operation="set_component_value",
+                target=f"{refdes}.value",
+                before=before.strip(),
+                after=format_spice_scalar(Decimal(str(float(after)))),
+                reason="Selected by an integrity-checked native Multisim parameter sweep ranking.",
+            )
+        )
+    if not operations:
+        raise ValueError("best native sweep result does not change any component value")
+    patch = DesignPatch(
+        patch_id=f"native-sweep-{verified_ranking['ranking_digest'][:24]}",
+        design_id=design_id.strip(),
+        base_revision=revision,
+        operations=tuple(operations),
+        description="Apply the best reviewed native Multisim parameter sweep candidate.",
+        metadata={
+            "source": "native-multisim-parameter-sweep",
+            "readiness_digest": verified_readiness["readiness_digest"],
+            "ranking_digest": verified_ranking["ranking_digest"],
+            "objective": verified_ranking.get("objective", {}),
+        },
+    )
+    payload: dict[str, Any] = {
+        "state": "ready-for-approval",
+        "patch": patch.to_dict(),
+        "readiness_digest": verified_readiness["readiness_digest"],
+        "ranking_digest": verified_ranking["ranking_digest"],
+        "source_mutated": False,
+        "next_step": "approve_verified_patch_application",
+    }
+    payload["draft_digest"] = _digest(payload)
+    return payload
+
+
+__all__ = [
+    "prepare_native_sweep",
+    "prepare_native_sweep_patch",
+    "rank_native_sweep_results",
+]

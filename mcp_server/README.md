@@ -75,6 +75,8 @@ Stable and verified on Multisim 14.3:
   original value even when a run fails; it never saves the source `.ms14`.
 - `rank_native_sweep_results` scores the returned records against one explicit
   signal objective and produces a deterministic, digest-protected ranking.
+- `prepare_native_sweep_patch` converts the best ranked candidate into the same
+  reversible `DesignPatch` contract used by the existing approval workflow.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs

@@ -6,15 +6,23 @@ import json
 from unittest.mock import Mock, patch
 
 from multisim_mcp import server
-from multisim_mcp.native_sweep import prepare_native_sweep, rank_native_sweep_results
+from multisim_mcp.design_patch_service import prepare_design_patch
+from multisim_mcp.eda_core import CircuitComponent, CircuitDesign
+from multisim_mcp.native_sweep import (
+    prepare_native_sweep,
+    prepare_native_sweep_patch,
+    rank_native_sweep_results,
+)
 
 
 def _readiness() -> dict:
     payload = {
         "state": "ready-for-com-parameter-sweep",
+        "design_id": "design-native-test",
+        "design_revision": 3,
         "candidates": [
-            {"refdes": "R1", "target": "R1.value"},
-            {"refdes": "C1", "target": "C1.value"},
+            {"refdes": "R1", "target": "R1.value", "value": "1000"},
+            {"refdes": "C1", "target": "C1.value", "value": "1e-7"},
         ],
     }
     payload["readiness_digest"] = hashlib.sha256(
@@ -90,8 +98,61 @@ class NativeSweepTest(unittest.TestCase):
                 {"signal": "V(out)", "metric": "median", "direction": "minimize"},
             )
 
+    def test_prepares_standard_reversible_patch(self) -> None:
+        ranking = rank_native_sweep_results(
+            {
+                "state": "completed",
+                "original_values": {"R1": 1000.0, "C1": 1e-7},
+                "results": [
+                    {
+                        "parameters": {"R1": 1200.0, "C1": 1e-7},
+                        "analysis": {"rows": [[1.0]]},
+                    }
+                ],
+            },
+            {"signal": "V(out)", "metric": "final", "direction": "maximize"},
+        )
+        draft = prepare_native_sweep_patch(_readiness(), ranking)
+        self.assertEqual(draft["state"], "ready-for-approval")
+        self.assertEqual(draft["patch"]["design_id"], "design-native-test")
+        self.assertEqual(draft["patch"]["base_revision"], 3)
+        self.assertEqual(len(draft["patch"]["operations"]), 1)
+        self.assertEqual(draft["patch"]["operations"][0]["target"], "R1.value")
+        self.assertEqual(draft["patch"]["operations"][0]["before"], "1000")
+        self.assertEqual(draft["patch"]["operations"][0]["after"], "1.2k")
+        self.assertRegex(draft["draft_digest"], r"^[0-9a-f]{64}$")
+        prepared = prepare_design_patch(
+            CircuitDesign(
+                design_id="design-native-test",
+                title="Native test",
+                revision=3,
+                components=(
+                    CircuitComponent("R1", "R", ("in", "out"), value="1000"),
+                    CircuitComponent("C1", "C", ("out", "0"), value="1e-7"),
+                ),
+            ),
+            draft["patch"],
+        )
+        self.assertEqual(prepared.candidate.components[0].value, "1.2k")
+        self.assertEqual(prepared.inverse_patch.operations[0].after, "1000")
+
+    def test_patch_rejects_stale_design_value(self) -> None:
+        ranking = rank_native_sweep_results(
+            {
+                "state": "completed",
+                "original_values": {"R1": 999.0},
+                "results": [
+                    {"parameters": {"R1": 1200.0}, "analysis": {"rows": [[1.0]]}}
+                ],
+            },
+            {"signal": "V(out)", "metric": "final", "direction": "maximize"},
+        )
+        with self.assertRaisesRegex(ValueError, "measured COM value"):
+            prepare_native_sweep_patch(_readiness(), ranking)
+
     def test_server_sweep_restores_original_values(self) -> None:
         fake = Mock()
+        fake.circuit_info.return_value = {"name": "Native Test", "file": "C:/circuits/native.ms14"}
         fake.enum_components.return_value = ["R1"]
         fake.get_rlc_value.return_value = {"component": "R1", "value": 1000.0}
         fake.run_dc_operating_point.return_value = {"results": {"V(out)": {"rows": [[1.0]]}}}

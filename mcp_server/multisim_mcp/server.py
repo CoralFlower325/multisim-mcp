@@ -91,6 +91,7 @@ from multisim_mcp.design_binding import (
 )
 from multisim_mcp.native_sweep import (
     prepare_native_sweep,
+    prepare_native_sweep_patch as build_native_sweep_patch,
     rank_native_sweep_results as rank_native_sweep_records,
 )
 from multisim_mcp.native_metadata import extract_native_component_metadata
@@ -1693,6 +1694,7 @@ def run_native_parameter_sweep(
     if isinstance(num_samples, bool) or not isinstance(num_samples, int) or not 1 <= num_samples <= 100_000:
         raise ValueError("num_samples must be between 1 and 100000")
     combinations, refdes_list = prepare_native_sweep(readiness, candidates, approval)
+    circuit = client.circuit_info()
     available = {
         str(item).casefold()
         for item in (client.enum_components(0) or [])
@@ -1746,6 +1748,7 @@ def run_native_parameter_sweep(
     return {
         "state": "completed" if execution_error is None and restored else "failed",
         "analysis": analysis,
+        "circuit": circuit,
         "combination_count": len(combinations),
         "result_count": len(results),
         "results": results,
@@ -1765,6 +1768,14 @@ def rank_native_sweep_results(
 ) -> dict[str, Any]:
     """Rank completed native sweep records against an explicit scalar objective."""
     return rank_native_sweep_records(sweep_result, objective)
+
+
+@mcp.tool(com_serialized=False)
+def prepare_native_sweep_patch(
+    readiness: Mapping[str, Any], ranking: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Prepare a standard reversible DesignPatch from the best native sweep result."""
+    return build_native_sweep_patch(readiness, ranking)
 
 
 @mcp.tool()
