@@ -145,8 +145,71 @@ def bind_requirement_review_to_design(
         "simulation_started": False,
         "next_step": "run_baseline_experiment" if not missing else "define_signal_aliases",
     }
+    if snapshot_evidence is not None:
+        payload["native_optimization_readiness"] = assess_native_optimization_readiness(
+            design,
+            snapshot_evidence,
+            optimizable_parameters=optimizable,
+        )
     payload["binding_digest"] = _digest(payload)
     return payload
+
+
+def assess_native_optimization_readiness(
+    design: CircuitDesign,
+    snapshot: Mapping[str, Any],
+    *,
+    optimizable_parameters: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Assess whether an open Multisim circuit can undergo an approved COM sweep."""
+    validate_snapshot_for_binding(design, snapshot)
+    native = snapshot.get("native_metadata_coverage", {})
+    parameter = snapshot.get("parameter_coverage", {})
+    boundary = snapshot.get("boundary_review", {})
+    candidates = list(optimizable_parameters or [])
+    model_findings = [
+        item
+        for item in boundary.get("findings", [])
+        if isinstance(item, Mapping)
+        and item.get("code")
+        in {"model_not_explicit", "hidden_pin_mapping_unverified", "unsupported_netlist_record"}
+    ]
+    matched = int(native.get("matched", 0)) if isinstance(native, Mapping) else 0
+    verified_models = (
+        len(native.get("models_verified", [])) if isinstance(native, Mapping) else 0
+    )
+    verified_pins = (
+        len(native.get("pin_inventories_verified", [])) if isinstance(native, Mapping) else 0
+    )
+    verified_values = int(parameter.get("verified", 0)) if isinstance(parameter, Mapping) else 0
+    ready = bool(candidates) and not model_findings and matched == len(design.components)
+    if candidates and verified_values < len(candidates):
+        ready = False
+    return {
+        "state": "ready-for-com-parameter-sweep" if ready else "manual-review-required",
+        "execution_mode": "multisim-com-open-circuit",
+        "candidate_count": len(candidates),
+        "candidates": [dict(item) for item in candidates],
+        "native_metadata": {
+            "matched_components": matched,
+            "model_identities_verified": verified_models,
+            "pin_inventories_verified": verified_pins,
+        },
+        "parameter_coverage": {
+            "verified_values": verified_values,
+            "required_values": len(candidates),
+        },
+        "boundary_findings": model_findings,
+        "requires_runtime_gate": True,
+        "requires_approval": True,
+        "must_restore_original_values": True,
+        "source_mutated": False,
+        "next_step": (
+            "approve_native_parameter_sweep"
+            if ready
+            else "resolve_native_metadata_or_parameter_gaps"
+        ),
+    }
 
 
 def validate_snapshot_for_binding(
@@ -170,7 +233,20 @@ def validate_snapshot_for_binding(
     if not isinstance(cross_validation, Mapping) or cross_validation.get("state") != "verified":
         raise ValueError("snapshot_evidence cross-validation is not verified")
     boundary_review = snapshot.get("boundary_review")
-    if not isinstance(boundary_review, Mapping) or not boundary_review.get("optimization_safe"):
+    if not isinstance(boundary_review, Mapping):
+        raise ValueError("snapshot_evidence boundary review is required")
+    if boundary_review.get("optimization_safe"):
+        return
+    findings = boundary_review.get("findings", [])
+    native_evidence = snapshot.get("native_metadata_evidence", {})
+    native_verified = isinstance(native_evidence, Mapping) and native_evidence.get("state") == "verified"
+    connectivity_only = isinstance(findings, list) and bool(findings) and all(
+        isinstance(item, Mapping) and item.get("code") == "connectivity_report_missing_parameters"
+        for item in findings
+    )
+    if native_verified and connectivity_only:
+        return
+    if not boundary_review.get("optimization_safe"):
         raise ValueError("snapshot_evidence has unresolved model or hidden-pin boundaries")
 
 
