@@ -12,6 +12,7 @@ from multisim_mcp.design_binding import (
     assess_snapshot_boundaries,
     bind_requirement_review_to_design,
     build_existing_design_snapshot,
+    validate_snapshot_for_binding,
 )
 from multisim_mcp.eda_core import CircuitDesign
 from multisim_mcp.requirement_contract import review_design_requirements
@@ -126,6 +127,36 @@ class DesignBindingTest(unittest.TestCase):
             {item["refdes"] for item in result["optimizable_parameters"]}, {"R1", "C1"}
         )
         self.assertFalse(result["source_mutated"])
+
+    def test_guarded_binding_requires_verified_snapshot_evidence(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",
+            circuit_info={"name": "Opened", "file": "C:/demo.ms14"},
+            components=["V1", "R1", "C1"],
+            inputs=[],
+            outputs=[],
+        )
+        design = CircuitDesign.from_dict(snapshot["design"])
+        review = review_design_requirements(
+            [
+                {
+                    "id": "output",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "operator": "at_least",
+                    "target": 1.0,
+                    "unit": "V",
+                }
+            ]
+        )
+        result = bind_requirement_review_to_design(
+            design, review, snapshot_evidence=snapshot
+        )
+        self.assertEqual(result["state"], "ready-for-baseline")
+        tampered = dict(snapshot)
+        tampered["boundary_review"] = {"optimization_safe": False}
+        with self.assertRaisesRegex(ValueError, "unresolved model"):
+            validate_snapshot_for_binding(design, tampered)
 
     def test_reports_missing_signal_and_supports_alias(self) -> None:
         review = review_design_requirements(

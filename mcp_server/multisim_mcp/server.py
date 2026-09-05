@@ -982,6 +982,7 @@ def bind_requirement_review_to_design(
     design: dict[str, Any],
     requirement_review: dict[str, Any],
     signal_aliases: dict[str, str] | None = None,
+    snapshot_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind reviewed requirements to an existing design snapshot without edits.
 
@@ -994,6 +995,7 @@ def bind_requirement_review_to_design(
         normalized_design,
         requirement_review,
         signal_aliases=signal_aliases,
+        snapshot_evidence=snapshot_evidence,
     )
 
 

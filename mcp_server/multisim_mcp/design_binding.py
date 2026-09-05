@@ -77,10 +77,13 @@ def bind_requirement_review_to_design(
     review: Mapping[str, Any],
     *,
     signal_aliases: Mapping[str, str] | None = None,
+    snapshot_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind review signals to a design snapshot without touching the source file."""
     if not isinstance(design, CircuitDesign):
         raise ValueError("design must be CircuitDesign")
+    if snapshot_evidence is not None:
+        validate_snapshot_for_binding(design, snapshot_evidence)
     verified = validate_requirement_review(review)
     aliases = {} if signal_aliases is None else dict(signal_aliases)
     if not isinstance(signal_aliases, (Mapping, type(None))):
@@ -136,6 +139,31 @@ def bind_requirement_review_to_design(
     }
     payload["binding_digest"] = _digest(payload)
     return payload
+
+
+def validate_snapshot_for_binding(
+    design: CircuitDesign, snapshot: Mapping[str, Any]
+) -> None:
+    """Require a verified snapshot envelope before a guarded binding."""
+    if not isinstance(design, CircuitDesign):
+        raise ValueError("design must be CircuitDesign")
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("snapshot_evidence must be an object")
+    if snapshot.get("kind") != DESIGN_SNAPSHOT_KIND:
+        raise ValueError("snapshot_evidence kind is invalid")
+    if snapshot.get("schema_version") != DESIGN_SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError("snapshot_evidence schema_version is unsupported")
+    snapshot_design = snapshot.get("design")
+    if not isinstance(snapshot_design, Mapping):
+        raise ValueError("snapshot_evidence.design is required")
+    if _digest(snapshot_design) != _digest(design.to_dict()):
+        raise ValueError("snapshot_evidence design does not match binding design")
+    cross_validation = snapshot.get("cross_validation")
+    if not isinstance(cross_validation, Mapping) or cross_validation.get("state") != "verified":
+        raise ValueError("snapshot_evidence cross-validation is not verified")
+    boundary_review = snapshot.get("boundary_review")
+    if not isinstance(boundary_review, Mapping) or not boundary_review.get("optimization_safe"):
+        raise ValueError("snapshot_evidence has unresolved model or hidden-pin boundaries")
 
 
 def build_existing_design_snapshot(
@@ -306,5 +334,6 @@ __all__ = [
     "build_existing_design_snapshot",
     "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
+    "validate_snapshot_for_binding",
     "bind_requirement_review_to_design",
 ]

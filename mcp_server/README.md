@@ -62,7 +62,8 @@ Stable and verified on Multisim 14.3:
   fail closed before simulation.
 - `bind_requirement_review_to_design` performs a read-only signal/node/component
   binding pass for an existing `CircuitDesign` snapshot and reports missing aliases
-  plus bounded R/C/L optimization candidates. It does not edit `.ms14` files.
+  plus bounded R/C/L optimization candidates. When `snapshot_evidence` is supplied,
+  cross-validation and boundary review must pass. It does not edit `.ms14` files.
 - `snapshot_open_circuit` exports the currently open Multisim circuit through the
   isolated COM worker into a new, validated snapshot directory, retaining the
   reported netlist and COM enumeration evidence without overwriting the source.
