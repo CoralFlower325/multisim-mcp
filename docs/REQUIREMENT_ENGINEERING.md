@@ -74,7 +74,9 @@
 后续流程接收 JSON 前可调用 `validate_requirement_review` 校验 `contract_digest`；摘要不匹配
 时必须退回重新审查，不能继续使用被修改的交接包。
 `optimize_design` 和 `global_optimize_design` 接收该交接包后，可分别自动填充单目标或多目标
-规范；冲突、未匹配或多重匹配会在仿真开始前失败关闭。
+规范；`submit_design_optimization`、`submit_global_optimization` 和自主纠错入口也使用同一
+规则，并把 `requirement_review_digest` 写入队列请求。冲突、未匹配或多重匹配会在仿真开始前
+失败关闭。
 
 ## 与优化流程的衔接
 

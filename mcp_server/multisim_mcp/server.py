@@ -2478,6 +2478,11 @@ def submit_global_optimization(
             "job_timeout": float(job_timeout),
             "heartbeat_timeout": float(heartbeat_timeout),
             "resume_existing": resume_existing,
+            "requirement_review_digest": (
+                requirement_review.get("contract_digest")
+                if requirement_review is not None
+                else None
+            ),
         }
     )
 
@@ -2665,6 +2670,11 @@ def submit_autonomous_correction(
             "job_timeout": float(job_timeout),
             "heartbeat_timeout": float(heartbeat_timeout),
             "resume_existing": resume_existing,
+            "requirement_review_digest": (
+                requirement_review.get("contract_digest")
+                if requirement_review is not None
+                else None
+            ),
         }
     )
 
@@ -2756,6 +2766,11 @@ def submit_design_optimization(
             "job_timeout": float(job_timeout),
             "heartbeat_timeout": float(heartbeat_timeout),
             "resume_existing": resume_existing,
+            "requirement_review_digest": (
+                requirement_review.get("contract_digest")
+                if requirement_review is not None
+                else None
+            ),
         }
     )
 
