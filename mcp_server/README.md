@@ -83,6 +83,9 @@ Stable and verified on Multisim 14.3:
   approval plus an explicit saved-source acknowledgement, writes only a new
   `.ms14` copy, then reopens the original source. Unsaved UI changes are not
   preserved by this reopen step.
+- `compare_native_sweep_baseline` identifies the original-value candidate and
+  calculates metric and relative improvement; `export_native_sweep_report`
+  writes a Chinese-first Markdown report, JSON evidence, and SHA-256 manifest.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs

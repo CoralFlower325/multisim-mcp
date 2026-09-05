@@ -96,6 +96,10 @@ from multisim_mcp.native_sweep import (
     validate_native_sweep_patch_draft,
 )
 from multisim_mcp.preferred_values import parse_spice_scalar
+from multisim_mcp.native_sweep_report import (
+    compare_native_sweep_baseline as compare_native_sweep_records,
+    export_native_sweep_report as write_native_sweep_report,
+)
 from multisim_mcp.native_metadata import extract_native_component_metadata
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
@@ -1863,6 +1867,20 @@ def apply_native_sweep_patch_to_copy(
         "error": execution_error,
         "next_step": "verify_native_patch_copy" if saved_copy and reopened_source and execution_error is None else "inspect_failed_copy",
     }
+
+
+@mcp.tool(com_serialized=False)
+def compare_native_sweep_baseline(ranking: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare the best native sweep candidate against the original-value baseline."""
+    return compare_native_sweep_records(ranking)
+
+
+@mcp.tool(com_serialized=False)
+def export_native_sweep_report(
+    comparison: Mapping[str, Any], output_dir: str
+) -> dict[str, Any]:
+    """Export a bilingual native sweep comparison report and integrity manifest."""
+    return write_native_sweep_report(comparison, output_dir)
 
 
 @mcp.tool()
