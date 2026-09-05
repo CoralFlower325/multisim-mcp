@@ -60,6 +60,9 @@ Stable and verified on Multisim 14.3:
   `requirement_review` envelope directly, filling measurable hard constraints and
   objective candidates without manual JSON copying; conflicts and ambiguous goals
   fail closed before simulation.
+- `bind_requirement_review_to_design` performs a read-only signal/node/component
+  binding pass for an existing `CircuitDesign` snapshot and reports missing aliases
+  plus bounded R/C/L optimization candidates. It does not edit `.ms14` files.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs

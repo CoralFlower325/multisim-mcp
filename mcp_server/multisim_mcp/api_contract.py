@@ -55,6 +55,7 @@ FEATURES: Final = (
     "design_diagnosis",
     "design_correction",
     "design_optimization",
+    "design_binding",
     "requirement_engineering",
     "correction_benchmarks",
     "durable_jobs",
