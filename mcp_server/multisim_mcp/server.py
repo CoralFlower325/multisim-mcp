@@ -89,6 +89,7 @@ from multisim_mcp.design_binding import (
     enrich_snapshot_with_native_metadata,
     bind_requirement_review_to_design as build_requirement_binding,
 )
+from multisim_mcp.native_sweep import prepare_native_sweep
 from multisim_mcp.native_metadata import extract_native_component_metadata
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
@@ -1659,6 +1660,100 @@ def snapshot_open_circuit(
         encoding="utf-8",
     )
     return snapshot
+
+
+@mcp.tool(com_serialized=False)
+def run_native_parameter_sweep(
+    readiness: Mapping[str, Any],
+    candidates: list[Any],
+    output_name: str,
+    approval: Mapping[str, Any],
+    analysis: str = "dc",
+    timeout: float = 30.0,
+    max_points: int = 500,
+    num_samples: int = 500,
+    duration: float = 0.001,
+    num_frequency_points: int = 20,
+    start_frequency: float = 100.0,
+    stop_frequency: float = 1_000_000.0,
+) -> dict[str, Any]:
+    """Run an approved, bounded COM sweep and restore every original R/L/C value."""
+    if not isinstance(output_name, str) or not output_name.strip() or "\x00" in output_name:
+        raise ValueError("output_name must be a non-empty signal name")
+    analysis = str(analysis).strip().lower()
+    if analysis not in {"dc", "transient", "ac"}:
+        raise ValueError("analysis must be one of: dc, transient, ac")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < float(timeout) <= 600:
+        raise ValueError("timeout must be between 0 and 600 seconds")
+    if isinstance(max_points, bool) or not isinstance(max_points, int) or not 1 <= max_points <= 10_000:
+        raise ValueError("max_points must be between 1 and 10000")
+    if isinstance(num_samples, bool) or not isinstance(num_samples, int) or not 1 <= num_samples <= 100_000:
+        raise ValueError("num_samples must be between 1 and 100000")
+    combinations, refdes_list = prepare_native_sweep(readiness, candidates, approval)
+    available = {
+        str(item).casefold()
+        for item in (client.enum_components(0) or [])
+        if isinstance(item, str) and item.strip()
+    }
+    missing = [refdes for refdes in refdes_list if refdes.casefold() not in available]
+    if missing:
+        raise ValueError(f"R/L/C components are not open in Multisim: {missing}")
+    original_values: dict[str, float] = {}
+    for refdes in refdes_list:
+        original_values[refdes] = float(client.get_rlc_value(refdes)["value"])
+    results: list[dict[str, Any]] = []
+    execution_error: str | None = None
+    restore_errors: list[dict[str, str]] = []
+    try:
+        for parameters in combinations:
+            for refdes, value in parameters.items():
+                client.set_rlc_value(refdes, value)
+            if analysis == "dc":
+                outcome = client.run_dc_operating_point([output_name], float(timeout), max_points)
+            elif analysis == "transient":
+                outcome = client.run_transient(
+                    output_name,
+                    1_000_000.0,
+                    num_samples,
+                    float(duration),
+                    False,
+                    float(timeout),
+                    max_points,
+                )
+            else:
+                outcome = client.run_ac_sweep(
+                    [output_name],
+                    0,
+                    num_frequency_points,
+                    float(start_frequency),
+                    float(stop_frequency),
+                    float(timeout),
+                    max_points,
+                )
+            results.append({"parameters": parameters, "analysis": outcome})
+    except Exception as exc:
+        execution_error = str(exc)[:1024]
+    finally:
+        for refdes, value in original_values.items():
+            try:
+                client.set_rlc_value(refdes, value)
+            except Exception as exc:
+                restore_errors.append({"component": refdes, "error": str(exc)[:512]})
+    restored = not restore_errors
+    return {
+        "state": "completed" if execution_error is None and restored else "failed",
+        "analysis": analysis,
+        "combination_count": len(combinations),
+        "result_count": len(results),
+        "results": results,
+        "original_values": original_values,
+        "restored_original_values": restored,
+        "restore_errors": restore_errors,
+        "error": execution_error,
+        "source_mutated": False,
+        "in_memory_mutated": True,
+        "next_step": "review_sweep_results" if execution_error is None and restored else "repair_restore_failure",
+    }
 
 
 @mcp.tool()

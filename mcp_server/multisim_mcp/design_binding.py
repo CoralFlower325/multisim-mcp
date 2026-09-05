@@ -185,7 +185,7 @@ def assess_native_optimization_readiness(
     ready = bool(candidates) and not model_findings and matched == len(design.components)
     if candidates and verified_values < len(candidates):
         ready = False
-    return {
+    payload = {
         "state": "ready-for-com-parameter-sweep" if ready else "manual-review-required",
         "execution_mode": "multisim-com-open-circuit",
         "candidate_count": len(candidates),
@@ -210,6 +210,8 @@ def assess_native_optimization_readiness(
             else "resolve_native_metadata_or_parameter_gaps"
         ),
     }
+    payload["readiness_digest"] = _digest(payload)
+    return payload
 
 
 def validate_snapshot_for_binding(

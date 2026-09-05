@@ -43,7 +43,9 @@ MIT 代码授权范围，公开仓库默认不应包含这些文件。用户需�
 [`需求契约审查`](docs/REQUIREMENT_ENGINEERING.md)。
 开发分支还新增 `bind_requirement_review_to_design`，把契约绑定到已有设计快照并报告
 缺失信号与可优化参数，以及 `snapshot_open_circuit` 的 COM 导入快照入口；已发布的
-`v1.2.0` 仍保持 78 个工具，开发分支公共面为 81 个工具。
+`v1.2.0` 仍保持 78 个工具，开发分支公共面为 82 个工具。
+绑定结果中的 `native_optimization_readiness` 带有完整性摘要；在用户明确批准、通过运行时门禁后，
+`run_native_parameter_sweep` 才会对当前打开工程执行有界 R/C/L 参数扫描，并在每次运行后恢复原值。
 
 ## 已实现的完整闭环
 

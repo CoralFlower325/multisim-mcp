@@ -15,6 +15,9 @@
 - `contract_digest` 会被带入绑定结果，绑定结果自身也有 `binding_digest`。
 - 带有原生快照时，结果还会返回 `native_optimization_readiness`，列出可通过 COM
   `SetRLCValue` 扫描的候选，并要求运行时门禁、显式审批和恢复原值。
+- 就绪对象包含 `readiness_digest`；扫描器会在执行前重新计算摘要，拒绝被调用方篡改的候选或状态。
+- `run_native_parameter_sweep` 接收该就绪报告和审批对象，执行受限 DC/瞬态/AC 参数网格；
+  它只在当前内存工程中临时改值，结束或异常时恢复全部原值，不调用 `Save`/`SaveAs`。
 
 ## 返回状态
 
@@ -70,9 +73,12 @@ For R/C/L entries in a connectivity report, `snapshot_open_circuit` also records
 `RLCValue` readings in `parameter_evidence`; this improves parameter visibility without
 silently approving missing models or hidden pins.
 When a verified native snapshot is supplied, the binding also returns
-`native_optimization_readiness` for a future COM `SetRLCValue` sweep. The plan requires a
-runtime gate, explicit approval, and restoration of original values; missing native evidence
+`native_optimization_readiness` for a guarded COM `SetRLCValue` sweep. The plan requires a
+readiness digest, runtime gate, explicit approval, and restoration of original values; missing native evidence
 keeps the state at `manual-review-required`.
+`run_native_parameter_sweep` consumes that readiness report and an explicit approval to execute
+a bounded DC/transient/AC grid. It changes values only in the open in-memory circuit, always
+restores the original values, and never calls `Save` or `SaveAs`.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.
