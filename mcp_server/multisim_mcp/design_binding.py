@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Final
 
 from .eda_core import CircuitDesign
@@ -17,6 +18,7 @@ DESIGN_BINDING_SCHEMA_VERSION: Final = 1
 DESIGN_BINDING_KIND: Final = "multisim-mcp-design-requirement-binding"
 DESIGN_SNAPSHOT_SCHEMA_VERSION: Final = 1
 DESIGN_SNAPSHOT_KIND: Final = "multisim-mcp-existing-design-snapshot"
+_MAX_SNAPSHOT_BYTES: Final = 16 * 1024 * 1024
 _VOLTAGE_RE = re.compile(r"^V\((?P<node>[^(),\s]+)(?:,(?P<reference>[^()\s]+))?\)$", re.I)
 _CURRENT_RE = re.compile(r"^I\((?P<refdes>[^()\s]+)\)$", re.I)
 _OPTIMIZABLE_KINDS: Final = frozenset({"R", "C", "L", "RESISTOR", "CAPACITOR", "INDUCTOR"})
@@ -64,12 +66,13 @@ def _signal_binding(signal: object, design: CircuitDesign, aliases: Mapping[str,
             if refdes.casefold() in components
             else refdes,
         }
-    return {
+    payload = {
         "signal": requested,
         "resolved_signal": actual,
         "state": "needs-explicit-alias",
         "message": "无法从该信号文本推断节点或元件，请提供 signal_aliases 或明确输出命名。",
     }
+    return payload
 
 
 def bind_requirement_review_to_design(
@@ -195,7 +198,7 @@ def build_existing_design_snapshot(
         outputs=outputs,
     )
     boundary_review = assess_snapshot_boundaries(design)
-    return {
+    payload = {
         "schema_version": DESIGN_SNAPSHOT_SCHEMA_VERSION,
         "kind": DESIGN_SNAPSHOT_KIND,
         "design": design.to_dict(),
@@ -224,6 +227,57 @@ def build_existing_design_snapshot(
             )
         ),
     }
+    # The server adds output paths and the raw COM return value afterwards.
+    # Keep those ephemeral fields out of the digest so a later process can
+    # verify the persisted design evidence deterministically.
+    payload["snapshot_digest"] = _digest(payload)
+    return payload
+
+
+def load_existing_design_snapshot(path: str) -> tuple[dict[str, Any], CircuitDesign]:
+    """Load and integrity-check a persisted existing-design snapshot."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("snapshot path must not be empty")
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise ValueError("snapshot path must not be a symbolic link")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"snapshot file does not exist: {resolved}")
+    if resolved.stat().st_size > _MAX_SNAPSHOT_BYTES:
+        raise ValueError("snapshot file exceeds the 16 MiB safety limit")
+    try:
+        raw = resolved.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise ValueError("snapshot file is not UTF-8 JSON") from exc
+    try:
+        snapshot = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("snapshot file is not valid JSON") from exc
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("snapshot root must be an object")
+    if snapshot.get("kind") != DESIGN_SNAPSHOT_KIND:
+        raise ValueError("snapshot kind is invalid")
+    if snapshot.get("schema_version") != DESIGN_SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError("snapshot schema_version is unsupported")
+    recorded_digest = snapshot.get("snapshot_digest")
+    if not isinstance(recorded_digest, str) or not recorded_digest:
+        raise ValueError("snapshot_digest is required")
+    unsigned = dict(snapshot)
+    unsigned.pop("snapshot_digest", None)
+    # Ignore fields added by the server wrapper after the signed payload.
+    for key in ("netlist_path", "snapshot_path", "export_result"):
+        unsigned.pop(key, None)
+    if _digest(unsigned) != recorded_digest:
+        raise ValueError("snapshot integrity digest does not match content")
+    design_payload = snapshot.get("design")
+    if not isinstance(design_payload, Mapping):
+        raise ValueError("snapshot.design is required")
+    try:
+        design = CircuitDesign.from_dict(design_payload)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ValueError("snapshot.design is not a valid CircuitDesign") from exc
+    return dict(snapshot), design
 
 
 def _enumerated_names(values: list[Any]) -> set[str]:
@@ -303,7 +357,12 @@ def assess_snapshot_boundaries(design: CircuitDesign) -> dict[str, Any]:
                     "message": "多端器件或耦合器件的隐藏引脚/内部节点需要在 Multisim 中人工确认。",
                 }
             )
-    unsupported = design.annotations.get("spice_import", {}).get("unsupported", [])
+    spice_import = design.annotations.get("spice_import", {})
+    unsupported = (
+        spice_import.get("unsupported", [])
+        if isinstance(spice_import, Mapping)
+        else []
+    )
     if isinstance(unsupported, list):
         for record in unsupported[:32]:
             findings.append(
@@ -332,6 +391,7 @@ __all__ = [
     "DESIGN_SNAPSHOT_SCHEMA_VERSION",
     "DESIGN_BINDING_SCHEMA_VERSION",
     "build_existing_design_snapshot",
+    "load_existing_design_snapshot",
     "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
     "validate_snapshot_for_binding",

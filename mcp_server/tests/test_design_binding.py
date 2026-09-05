@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,6 +13,7 @@ from multisim_mcp.design_binding import (
     assess_snapshot_boundaries,
     bind_requirement_review_to_design,
     build_existing_design_snapshot,
+    load_existing_design_snapshot,
     validate_snapshot_for_binding,
 )
 from multisim_mcp.eda_core import CircuitDesign
@@ -208,6 +210,32 @@ class DesignBindingTest(unittest.TestCase):
             self.assertTrue(Path(result["snapshot_path"]).is_file())
             self.assertTrue(Path(result["netlist_path"]).is_file())
         self.assertFalse(result["source_mutated"])
+
+    def test_server_snapshot_refuses_nonempty_output_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "keep.txt").write_text("do not overwrite", encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "directory must be empty"):
+                server.snapshot_open_circuit(tmp)
+
+    def test_persisted_snapshot_can_be_reloaded_and_detects_tampering(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",
+            circuit_info={"name": "Reloadable", "file": "C:/demo.ms14"},
+            components=["V1", "R1", "C1"],
+            inputs=[],
+            outputs=[],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "design-snapshot.json"
+            path.write_text(json.dumps(snapshot), encoding="utf-8")
+            loaded, design = load_existing_design_snapshot(str(path))
+            self.assertEqual(loaded["snapshot_digest"], snapshot["snapshot_digest"])
+            self.assertEqual(design.design_id, snapshot["design"]["design_id"])
+            tampered = dict(snapshot)
+            tampered["circuit_name"] = "Tampered"
+            path.write_text(json.dumps(tampered), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "integrity digest"):
+                load_existing_design_snapshot(str(path))
 
 
 if __name__ == "__main__":

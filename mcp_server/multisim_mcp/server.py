@@ -1578,6 +1578,8 @@ def snapshot_open_circuit(
     if root == Path(root.anchor):
         raise ValueError("output_dir must not be a filesystem root")
     root.mkdir(parents=True, exist_ok=True)
+    if any(root.iterdir()):
+        raise FileExistsError("snapshot output directory must be empty")
     netlist_path = root / "multisim-exported.cir"
     snapshot_path = root / "design-snapshot.json"
     if netlist_path.exists() or snapshot_path.exists():
