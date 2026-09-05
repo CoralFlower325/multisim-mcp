@@ -20,6 +20,7 @@ DESIGN_SNAPSHOT_KIND: Final = "multisim-mcp-existing-design-snapshot"
 _VOLTAGE_RE = re.compile(r"^V\((?P<node>[^(),\s]+)(?:,(?P<reference>[^()\s]+))?\)$", re.I)
 _CURRENT_RE = re.compile(r"^I\((?P<refdes>[^()\s]+)\)$", re.I)
 _OPTIMIZABLE_KINDS: Final = frozenset({"R", "C", "L", "RESISTOR", "CAPACITOR", "INDUCTOR"})
+_MODEL_SENSITIVE_KINDS: Final = frozenset({"D", "Q", "M", "J", "X", "U", "T", "O", "S"})
 
 
 def _digest(value: object) -> str:
@@ -165,6 +166,7 @@ def build_existing_design_snapshot(
         inputs=inputs,
         outputs=outputs,
     )
+    boundary_review = assess_snapshot_boundaries(design)
     return {
         "schema_version": DESIGN_SNAPSHOT_SCHEMA_VERSION,
         "kind": DESIGN_SNAPSHOT_KIND,
@@ -180,12 +182,18 @@ def build_existing_design_snapshot(
             "outputs": outputs,
         },
         "cross_validation": cross_validation,
+        "boundary_review": boundary_review,
         "source_mutated": False,
         "simulation_started": False,
         "next_step": (
             "bind_requirement_review_to_design"
             if cross_validation["state"] == "verified"
-            else "review_snapshot_mismatch"
+            and boundary_review["optimization_safe"]
+            else (
+                "review_snapshot_mismatch"
+                if cross_validation["state"] != "verified"
+                else "review_snapshot_boundaries"
+            )
         ),
     }
 
@@ -242,12 +250,61 @@ def cross_validate_design_snapshot(
     }
 
 
+def assess_snapshot_boundaries(design: CircuitDesign) -> dict[str, Any]:
+    """Report model/pin details that a netlist snapshot cannot prove."""
+    if not isinstance(design, CircuitDesign):
+        raise ValueError("design must be CircuitDesign")
+    findings: list[dict[str, Any]] = []
+    for component in design.components:
+        kind = component.kind.upper()
+        if kind in _MODEL_SENSITIVE_KINDS and not component.model:
+            findings.append(
+                {
+                    "refdes": component.refdes,
+                    "kind": component.kind,
+                    "code": "model_not_explicit",
+                    "message": "该器件依赖模型或载体参数，快照无法证明其内部模型与引脚映射。",
+                }
+            )
+        if len(component.nodes) > 2 or kind in {"X", "U", "T", "O", "K"}:
+            findings.append(
+                {
+                    "refdes": component.refdes,
+                    "kind": component.kind,
+                    "code": "hidden_pin_mapping_unverified",
+                    "message": "多端器件或耦合器件的隐藏引脚/内部节点需要在 Multisim 中人工确认。",
+                }
+            )
+    unsupported = design.annotations.get("spice_import", {}).get("unsupported", [])
+    if isinstance(unsupported, list):
+        for record in unsupported[:32]:
+            findings.append(
+                {
+                    "code": "unsupported_netlist_record",
+                    "record": str(record),
+                    "message": "网表记录未被当前解析器结构化，不能据此自动优化。",
+                }
+            )
+    return {
+        "state": "manual-review-required" if findings else "no-known-boundary-findings",
+        "finding_count": len(findings),
+        "findings": findings[:64],
+        "optimization_safe": not findings,
+        "message": (
+            "未发现当前快照边界问题"
+            if not findings
+            else "快照存在模型或隐藏引脚边界，需人工确认后再优化"
+        ),
+    }
+
+
 __all__ = [
     "DESIGN_BINDING_KIND",
     "DESIGN_SNAPSHOT_KIND",
     "DESIGN_SNAPSHOT_SCHEMA_VERSION",
     "DESIGN_BINDING_SCHEMA_VERSION",
     "build_existing_design_snapshot",
+    "assess_snapshot_boundaries",
     "cross_validate_design_snapshot",
     "bind_requirement_review_to_design",
 ]
