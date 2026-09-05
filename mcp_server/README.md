@@ -35,6 +35,7 @@ Stable and verified on Multisim 14.3:
   bilingual HTML/PDF, and reproducibility-manifest export.
 - High-level `run_circuit_experiment` workflow.
 - Read-only `plan_design_options` / `select_design_option` /
+  `review_design_requirements` /
   `prepare_design_specification` / `prepare_netlist_draft` / `resolve_component_requirements` /
   `approve_component_resolution` / `compile_executable_netlist` /
   `approve_executable_netlist` workflow that compares
@@ -563,6 +564,12 @@ every option is marked
 `planning-only`, and its execution boundary keeps schematic generation, simulation, and file
 writes false. The logical draft also keeps CircuitDesign, SPICE generation, and schematic readiness
 false. See [`DESIGN_PLANNING.md`](../docs/DESIGN_PLANNING.md).
+
+For an existing circuit, run `review_design_requirements` before the baseline experiment. Pass
+the measured hard constraints plus optional soft objectives, preferences, and assumptions. The
+read-only result detects obvious contradictory bounds and gives the optimisation services a
+stable requirement contract; it does not claim physical feasibility or modify the source design.
+See [`REQUIREMENT_ENGINEERING.md`](../docs/REQUIREMENT_ENGINEERING.md).
 
 Choose the open complete-experiment backend when ngspice is installed:
 
