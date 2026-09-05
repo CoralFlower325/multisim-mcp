@@ -84,6 +84,7 @@ from multisim_mcp.requirement_contract import (
 )
 from multisim_mcp.design_binding import (
     build_existing_design_snapshot,
+    enrich_snapshot_with_com_parameters,
     bind_requirement_review_to_design as build_requirement_binding,
 )
 from multisim_mcp.design_specifications import (
@@ -1599,6 +1600,23 @@ def snapshot_open_circuit(
         outputs=client.enum_outputs(0),
         allow_unsupported=allow_unsupported,
     )
+    parameter_evidence: list[dict[str, Any]] = []
+    for component in snapshot["design"].get("components", []):
+        refdes = component.get("refdes") if isinstance(component, Mapping) else None
+        kind = str(component.get("kind") or "").upper() if isinstance(component, Mapping) else ""
+        if not isinstance(refdes, str) or kind not in {"R", "C", "L"}:
+            continue
+        try:
+            parameter_evidence.append({"component": refdes, **client.get_rlc_value(refdes)})
+        except Exception as exc:
+            parameter_evidence.append(
+                {
+                    "component": refdes,
+                    "state": "unavailable",
+                    "error": str(exc),
+                }
+            )
+    snapshot = enrich_snapshot_with_com_parameters(snapshot, parameter_evidence)
     snapshot["netlist_path"] = str(netlist_path)
     snapshot["snapshot_path"] = str(snapshot_path)
     snapshot["export_result"] = exported

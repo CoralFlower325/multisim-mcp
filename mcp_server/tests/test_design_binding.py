@@ -14,6 +14,7 @@ from multisim_mcp.design_binding import (
     bind_requirement_review_to_design,
     build_existing_design_snapshot,
     circuit_design_from_multisim_report,
+    enrich_snapshot_with_com_parameters,
     load_existing_design_snapshot,
     validate_snapshot_for_binding,
 )
@@ -69,6 +70,27 @@ in LowPassFilter _uc257 1
         self.assertEqual(design.components[0].nodes, ("0", "in"))
         self.assertEqual(design.annotations["multisim_report"]["format"], "connectivity")
         self.assertFalse(assess_snapshot_boundaries(design)["optimization_safe"])
+
+    def test_merges_verified_rlc_values_without_relaxing_boundaries(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            "V1 in 0 5\nR1 in out 1k\nC1 out 0 10n\n.end\n",
+            circuit_info={"name": "RLC"},
+            components=["V1", "R1", "C1"],
+            inputs=[],
+            outputs=[],
+        )
+        enriched = enrich_snapshot_with_com_parameters(
+            snapshot,
+            [
+                {"component": "R1", "value": 1000.0},
+                {"component": "C1", "value": 1e-7},
+            ],
+        )
+        values = {item["refdes"]: item["value"] for item in enriched["design"]["components"]}
+        self.assertEqual(values["R1"], "1000")
+        self.assertEqual(values["C1"], "1e-07")
+        self.assertEqual(enriched["parameter_coverage"]["verified"], 2)
+        self.assertTrue(enriched["boundary_review"]["optimization_safe"])
 
     def test_flags_model_and_hidden_pin_boundaries(self) -> None:
         design = CircuitDesign.from_dict(
@@ -217,6 +239,10 @@ in LowPassFilter _uc257 1
         fake_client.enum_components.return_value = ["V1", "R1", "C1"]
         fake_client.enum_inputs.return_value = ["V1"]
         fake_client.enum_outputs.return_value = ["V(out)"]
+        fake_client.get_rlc_value.side_effect = lambda refdes: {
+            "component": refdes,
+            "value": {"R1": 1000.0, "C1": 1e-7}.get(refdes, 0.0),
+        }
         with tempfile.TemporaryDirectory() as tmp, patch.object(server, "client", fake_client):
             result = server.snapshot_open_circuit(tmp)
             self.assertEqual(result["design"]["title"], "Opened")
@@ -225,6 +251,7 @@ in LowPassFilter _uc257 1
                 ["V1", "R1", "C1"],
             )
             self.assertTrue(Path(result["snapshot_path"]).is_file())
+            self.assertEqual(result["parameter_coverage"]["verified"], 2)
             self.assertTrue(Path(result["netlist_path"]).is_file())
         self.assertFalse(result["source_mutated"])
 
