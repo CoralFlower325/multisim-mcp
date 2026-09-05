@@ -2400,6 +2400,7 @@ def submit_global_optimization(
     job_timeout: float = 21600.0,
     heartbeat_timeout: float = 180.0,
     resume_existing: bool = False,
+    requirement_review: dict[str, Any] | None = None,
 ) -> JobSubmission:
     """Queue durable mixed topology/value Pareto optimization.
 
@@ -2408,7 +2409,16 @@ def submit_global_optimization(
     patch is persisted into the source design automatically.
     """
     normalized_design = CircuitDesign.from_dict(design)
-    validate_global_optimization_spec(spec, normalized_design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(
+            spec,
+            requirement_review,
+            global_mode=True,
+        )
+        if requirement_review is not None
+        else spec
+    )
+    validate_global_optimization_spec(effective_spec, normalized_design)
     if not isinstance(output_dir, str) or not output_dir.strip():
         raise ValueError("output_dir must not be empty")
     unresolved = Path(output_dir).expanduser()
@@ -2456,7 +2466,7 @@ def submit_global_optimization(
         or not 10 <= float(heartbeat_timeout) <= 900
     ):
         raise ValueError("heartbeat_timeout must be between 10 and 900 seconds")
-    persisted_spec = json.loads(json.dumps(spec, ensure_ascii=False, allow_nan=False))
+    persisted_spec = json.loads(json.dumps(effective_spec, ensure_ascii=False, allow_nan=False))
     return _job_manager().submit(
         {
             "job_kind": "global_optimization",
@@ -2484,6 +2494,7 @@ def autonomous_correct_design(
     model_timeout: float = 60.0,
     timeout_per_experiment: float = 120.0,
     max_points: int = 2000,
+    requirement_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Autonomously diagnose, propose, simulate, and select a repair candidate.
 
@@ -2493,6 +2504,16 @@ def autonomous_correct_design(
     applying it remains a separate explicit approval operation.
     """
     normalized_design = CircuitDesign.from_dict(design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(
+            spec,
+            requirement_review,
+            global_mode=True,
+            require_objectives=False,
+        )
+        if requirement_review is not None
+        else spec
+    )
     config = read_provider_config(provider_config_path)
     registry = ModelProviderRegistry.from_config(config)
     planner = ModelRepairPlanner(
@@ -2507,7 +2528,7 @@ def autonomous_correct_design(
     )
     return service.run(
         normalized_design,
-        spec,
+        effective_spec,
         output_dir,
         timeout_per_experiment=timeout_per_experiment,
         max_points=max_points,
@@ -2529,6 +2550,7 @@ def submit_autonomous_correction(
     job_timeout: float = 21600.0,
     heartbeat_timeout: float = 180.0,
     resume_existing: bool = False,
+    requirement_review: dict[str, Any] | None = None,
 ) -> JobSubmission:
     """Queue durable model-planned correction with round-level recovery.
 
@@ -2539,7 +2561,17 @@ def submit_autonomous_correction(
     replanned in a new attempt directory. No patch is applied automatically.
     """
     normalized_design = CircuitDesign.from_dict(design)
-    validate_autonomous_correction_spec(spec, normalized_design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(
+            spec,
+            requirement_review,
+            global_mode=True,
+            require_objectives=False,
+        )
+        if requirement_review is not None
+        else spec
+    )
+    validate_autonomous_correction_spec(effective_spec, normalized_design)
     provider_config = read_provider_config(provider_config_path)
     registry = ModelProviderRegistry.from_config(provider_config)
     provider_ids = set(registry.provider_ids())
@@ -2613,7 +2645,7 @@ def submit_autonomous_correction(
         raise ValueError("heartbeat_timeout must be between 10 and 900 seconds")
     if float(heartbeat_timeout) <= float(model_timeout):
         raise ValueError("heartbeat_timeout must exceed model_timeout")
-    persisted_spec = json.loads(json.dumps(spec, ensure_ascii=False, allow_nan=False))
+    persisted_spec = json.loads(json.dumps(effective_spec, ensure_ascii=False, allow_nan=False))
     persisted_provider_config = json.loads(
         json.dumps(provider_config, ensure_ascii=False, allow_nan=False)
     )
@@ -2647,6 +2679,7 @@ def submit_design_optimization(
     job_timeout: float = 7200.0,
     heartbeat_timeout: float = 180.0,
     resume_existing: bool = False,
+    requirement_review: dict[str, Any] | None = None,
 ) -> JobSubmission:
     """Queue a durable optimization with candidate-level crash recovery.
 
@@ -2656,7 +2689,12 @@ def submit_design_optimization(
     Set ``resume_existing`` only to adopt a matching interrupted output folder.
     """
     normalized_design = CircuitDesign.from_dict(design)
-    validate_optimization_spec(spec, normalized_design)
+    effective_spec = (
+        apply_requirement_review_to_optimization_spec(spec, requirement_review)
+        if requirement_review is not None
+        else spec
+    )
+    validate_optimization_spec(effective_spec, normalized_design)
     if not isinstance(output_dir, str) or not output_dir.strip():
         raise ValueError("output_dir must not be empty")
     unresolved = Path(output_dir).expanduser()
@@ -2705,7 +2743,7 @@ def submit_design_optimization(
     ):
         raise ValueError("heartbeat_timeout must be between 10 and 900 seconds")
     persisted_spec = json.loads(
-        json.dumps(spec, ensure_ascii=False, allow_nan=False)
+        json.dumps(effective_spec, ensure_ascii=False, allow_nan=False)
     )
     return _job_manager().submit(
         {

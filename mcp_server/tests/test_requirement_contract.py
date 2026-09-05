@@ -203,6 +203,17 @@ class RequirementContractTest(unittest.TestCase):
         )
         self.assertEqual(global_spec["objectives"][0]["requirement_id"], "vout-range")
 
+    def test_allows_autonomous_handoff_without_soft_objectives(self) -> None:
+        review = review_design_requirements(_voltage_constraints())
+        projected = apply_requirement_review_to_optimization_spec(
+            {"schema_version": 1, "title": "correction"},
+            review,
+            global_mode=True,
+            require_objectives=False,
+        )
+        self.assertEqual(projected["requirements"], review["hard_constraints"])
+        self.assertNotIn("objectives", projected)
+
 
 if __name__ == "__main__":
     unittest.main()
