@@ -83,6 +83,7 @@ from multisim_mcp.requirement_contract import (
     review_design_requirements as build_requirement_review,
 )
 from multisim_mcp.design_binding import (
+    build_existing_design_snapshot,
     bind_requirement_review_to_design as build_requirement_binding,
 )
 from multisim_mcp.design_specifications import (
@@ -1547,6 +1548,61 @@ def get_circuit_image(path: str, image_format: int = 2) -> dict:
 def report_netlist(path: str, probes_flag: bool = False, fmt: int = 0) -> dict:
     """Export the SPICE netlist to a text file."""
     return {"path": client.report_netlist(path, probes_flag, fmt)}
+
+
+@mcp.tool(com_serialized=False)
+def snapshot_open_circuit(
+    output_dir: str,
+    probes_flag: bool = False,
+    fmt: int = 0,
+    allow_unsupported: bool = False,
+) -> dict[str, Any]:
+    """Export the open Multisim circuit into a validated design snapshot.
+
+    The source ``.ms14`` remains untouched. The exported netlist and snapshot
+    are written only below ``output_dir``; COM enumeration is retained as
+    evidence alongside the parsed ``CircuitDesign``.
+    """
+    if not isinstance(output_dir, str) or not output_dir.strip():
+        raise ValueError("output_dir must not be empty")
+    if not isinstance(probes_flag, bool) or not isinstance(allow_unsupported, bool):
+        raise ValueError("probes_flag and allow_unsupported must be booleans")
+    if isinstance(fmt, bool) or not isinstance(fmt, int) or not 0 <= fmt <= 32:
+        raise ValueError("fmt must be an integer between 0 and 32")
+    unresolved = Path(output_dir).expanduser()
+    if unresolved.is_symlink():
+        raise ValueError("output_dir must not be a symbolic link")
+    root = unresolved.resolve()
+    if root == Path(root.anchor):
+        raise ValueError("output_dir must not be a filesystem root")
+    root.mkdir(parents=True, exist_ok=True)
+    netlist_path = root / "multisim-exported.cir"
+    snapshot_path = root / "design-snapshot.json"
+    if netlist_path.exists() or snapshot_path.exists():
+        raise FileExistsError("snapshot output already exists; choose a new output_dir")
+    exported = client.report_netlist(str(netlist_path), probes_flag, fmt)
+    if not netlist_path.is_file():
+        raise RuntimeError("Multisim did not produce the requested netlist export")
+    try:
+        netlist = netlist_path.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise ValueError("Multisim netlist export is not UTF-8 text") from exc
+    snapshot = build_existing_design_snapshot(
+        netlist,
+        circuit_info=client.circuit_info(),
+        components=client.enum_components(0),
+        inputs=client.enum_inputs(0),
+        outputs=client.enum_outputs(0),
+        allow_unsupported=allow_unsupported,
+    )
+    snapshot["netlist_path"] = str(netlist_path)
+    snapshot["snapshot_path"] = str(snapshot_path)
+    snapshot["export_result"] = exported
+    snapshot_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return snapshot
 
 
 @mcp.tool()

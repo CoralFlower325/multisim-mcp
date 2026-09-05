@@ -56,6 +56,7 @@ FEATURES: Final = (
     "design_correction",
     "design_optimization",
     "design_binding",
+    "design_import",
     "requirement_engineering",
     "correction_benchmarks",
     "durable_jobs",
