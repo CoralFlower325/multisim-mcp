@@ -502,6 +502,67 @@ def validate_requirement_review(review: Mapping[str, Any]) -> dict[str, Any]:
     return dict(review)
 
 
+def apply_requirement_review_to_optimization_spec(
+    spec: Mapping[str, Any],
+    review: Mapping[str, Any],
+    *,
+    global_mode: bool = False,
+) -> dict[str, Any]:
+    """Fill an optimization spec from a verified requirement review.
+
+    Existing explicit requirements/objectives are preserved only when they
+    agree with the review. Automatic objective projection is intentionally
+    strict: a single-objective run needs exactly one matched objective, while
+    a global run needs all objectives to be measurable and unambiguous.
+    """
+    if not isinstance(spec, Mapping):
+        raise ValueError("optimization spec must be an object")
+    verified = validate_requirement_review(review)
+    if verified["state"] != "ready-for-baseline":
+        raise ValueError("requirement review must be ready-for-baseline before optimization")
+    handoff = verified.get("optimization_handoff")
+    if not isinstance(handoff, Mapping) or handoff.get("state") != "ready":
+        raise ValueError("requirement review has no complete optimizer handoff")
+    requirements = handoff.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        raise ValueError("requirement review optimizer handoff has no requirements")
+    result = dict(spec)
+    explicit_requirements = result.get("requirements")
+    if explicit_requirements not in (None, [], requirements):
+        if _digest(explicit_requirements) != _digest(requirements):
+            raise ValueError("optimization spec requirements do not match requirement review")
+    result["requirements"] = [dict(item) for item in requirements]
+    unmapped = handoff.get("unmapped_objectives") or []
+    if unmapped:
+        raise ValueError("requirement review contains unmapped objectives")
+    if global_mode:
+        candidates = handoff.get("multi_objective_candidates")
+        if not isinstance(candidates, list) or not candidates:
+            raise ValueError("requirement review has no multi-objective candidates")
+        if not result.get("objectives"):
+            result["objectives"] = [
+                {
+                    key: item[key]
+                    for key in ("requirement_id", "goal", "target", "epsilon", "weight")
+                    if key in item
+                }
+                for item in candidates
+            ]
+    elif not result.get("objective"):
+        candidates = handoff.get("single_objective_candidates")
+        if not isinstance(candidates, list) or len(candidates) != 1:
+            raise ValueError(
+                "single-objective optimization requires exactly one matched soft objective"
+            )
+        candidate = candidates[0]
+        result["objective"] = {
+            key: candidate[key]
+            for key in ("requirement_id", "goal", "target")
+            if key in candidate
+        }
+    return result
+
+
 __all__ = [
     "MAX_ASSUMPTIONS",
     "MAX_HARD_CONSTRAINTS",
@@ -509,6 +570,7 @@ __all__ = [
     "MAX_SOFT_OBJECTIVES",
     "REQUIREMENT_CONTRACT_KIND",
     "REQUIREMENT_CONTRACT_SCHEMA_VERSION",
+    "apply_requirement_review_to_optimization_spec",
     "review_design_requirements",
     "validate_requirement_review",
 ]

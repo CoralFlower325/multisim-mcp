@@ -6,6 +6,7 @@ import unittest
 
 from multisim_mcp import server
 from multisim_mcp.requirement_contract import (
+    apply_requirement_review_to_optimization_spec,
     review_design_requirements,
     validate_requirement_review,
 )
@@ -176,6 +177,31 @@ class RequirementContractTest(unittest.TestCase):
         tampered["summary"] = "changed after approval"
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
             validate_requirement_review(tampered)
+
+    def test_projects_review_into_single_and_global_specs(self) -> None:
+        review = review_design_requirements(
+            _voltage_constraints(),
+            soft_objectives=[
+                {
+                    "id": "center-output",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "goal": "target",
+                    "target": 5.0,
+                    "unit": "V",
+                }
+            ],
+        )
+        base = {"schema_version": 1, "title": "demo"}
+        single = apply_requirement_review_to_optimization_spec(base, review)
+        self.assertEqual(single["requirements"], review["hard_constraints"])
+        self.assertEqual(single["objective"]["requirement_id"], "vout-range")
+        global_spec = apply_requirement_review_to_optimization_spec(
+            base,
+            review,
+            global_mode=True,
+        )
+        self.assertEqual(global_spec["objectives"][0]["requirement_id"], "vout-range")
 
 
 if __name__ == "__main__":

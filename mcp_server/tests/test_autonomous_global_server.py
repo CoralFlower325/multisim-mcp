@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from multisim_mcp import server
 from multisim_mcp.eda_core import CircuitDesign
+from multisim_mcp.requirement_contract import review_design_requirements
 from tests.test_design_optimization_server import DESIGN
 
 
@@ -72,6 +73,42 @@ class AutonomousGlobalServerTest(unittest.TestCase):
         self.assertEqual(args[2], "C:/correction-output")
         self.assertEqual(kwargs["timeout_per_experiment"], 44.0)
         self.assertEqual(kwargs["max_points"], 789)
+
+    def test_global_adapter_projects_verified_requirement_review(self) -> None:
+        service = Mock()
+        service.run.return_value = {"success": True, "status": "completed"}
+        review = review_design_requirements(
+            [
+                {
+                    "id": "vout",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "operator": "between",
+                    "lower": 0.0,
+                    "upper": 10.0,
+                    "unit": "V",
+                }
+            ],
+            soft_objectives=[
+                {
+                    "id": "maximize-output",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "goal": "maximize",
+                    "unit": "V",
+                }
+            ],
+        )
+        with patch.object(server, "_global_optimization_service", return_value=service):
+            server.global_optimize_design(
+                DESIGN,
+                {"schema_version": 1, "title": "review-driven"},
+                "C:/global-output",
+                requirement_review=review,
+            )
+        effective_spec = service.run.call_args.args[1]
+        self.assertEqual(effective_spec["requirements"][0]["id"], "vout")
+        self.assertEqual(effective_spec["objectives"][0]["requirement_id"], "vout")
 
     def test_submit_global_optimization_persists_durable_request(self) -> None:
         manager = Mock()
