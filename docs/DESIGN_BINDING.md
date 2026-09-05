@@ -24,6 +24,8 @@
 `snapshot_open_circuit` 可在 Windows COM 工作者中对当前已打开的 Multisim 工程执行安全的
 `ReportNetlist` 导出，并将解析后的 `CircuitDesign` 与 `circuit_info`、元件/输入/输出枚举
 证据写入独立目录。它不会覆盖源 `.ms14`；输出目录必须是新的快照目录。
+快照还包含 `cross_validation`：解析网表中的参考标号必须与 COM 元件枚举一致，否则
+`next_step` 为 `review_snapshot_mismatch`，不能直接进入需求绑定。
 
 当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
 支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限

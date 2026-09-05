@@ -159,6 +159,12 @@ def build_existing_design_snapshot(
         title=name,
         allow_unsupported=allow_unsupported,
     )
+    cross_validation = cross_validate_design_snapshot(
+        design,
+        components=components,
+        inputs=inputs,
+        outputs=outputs,
+    )
     return {
         "schema_version": DESIGN_SNAPSHOT_SCHEMA_VERSION,
         "kind": DESIGN_SNAPSHOT_KIND,
@@ -173,9 +179,66 @@ def build_existing_design_snapshot(
             "inputs": inputs,
             "outputs": outputs,
         },
+        "cross_validation": cross_validation,
         "source_mutated": False,
         "simulation_started": False,
-        "next_step": "bind_requirement_review_to_design",
+        "next_step": (
+            "bind_requirement_review_to_design"
+            if cross_validation["state"] == "verified"
+            else "review_snapshot_mismatch"
+        ),
+    }
+
+
+def _enumerated_names(values: list[Any]) -> set[str]:
+    names: set[str] = set()
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip().casefold())
+        elif isinstance(value, Mapping):
+            for key in ("refdes", "name", "id", "output", "input"):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    names.add(item.strip().casefold())
+                    break
+    return names
+
+
+def cross_validate_design_snapshot(
+    design: CircuitDesign,
+    *,
+    components: list[Any],
+    inputs: list[Any],
+    outputs: list[Any],
+) -> dict[str, Any]:
+    """Compare parsed design references with COM enumeration evidence."""
+    if not isinstance(design, CircuitDesign):
+        raise ValueError("design must be CircuitDesign")
+    enumerated_components = _enumerated_names(components)
+    parsed_components = {item.refdes.casefold() for item in design.components}
+    missing = sorted(parsed_components - enumerated_components)
+    extra = sorted(enumerated_components - parsed_components)
+    parsed_nets = {item.casefold() for item in design.nets}
+    input_names = sorted(_enumerated_names(inputs))
+    output_names = sorted(_enumerated_names(outputs))
+    return {
+        "state": "verified" if not missing and not extra else "mismatch",
+        "component_counts": {
+            "parsed": len(parsed_components),
+            "enumerated": len(enumerated_components),
+        },
+        "components_missing_from_enumeration": missing,
+        "components_extra_in_enumeration": extra,
+        "parsed_net_count": len(parsed_nets),
+        "enumerated_input_count": len(input_names),
+        "enumerated_output_count": len(output_names),
+        "inputs": input_names,
+        "outputs": output_names,
+        "message": (
+            "网表元件与 COM 枚举一致"
+            if not missing and not extra
+            else "网表元件与 COM 枚举不一致，需人工检查后才能绑定需求"
+        ),
     }
 
 
@@ -185,5 +248,6 @@ __all__ = [
     "DESIGN_SNAPSHOT_SCHEMA_VERSION",
     "DESIGN_BINDING_SCHEMA_VERSION",
     "build_existing_design_snapshot",
+    "cross_validate_design_snapshot",
     "bind_requirement_review_to_design",
 ]
