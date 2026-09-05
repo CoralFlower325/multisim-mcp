@@ -63,7 +63,8 @@
 
 返回 `state=ready-for-baseline` 时，只表示可以进入基线实验。若返回
 `state=conflict`，应先处理 `conflicts` 中的要求；系统不会用一个“最接近”的失败候选
-替代硬约束。
+替代硬约束。每个冲突也会给出 `relaxation_suggestions`，表示使区间刚好相交的最小边界调整；
+它们只是需求评审候选，不会自动修改电路或自动放宽约束，采纳后必须重新运行基线实验。
 
 ## 与优化流程的衔接
 
@@ -76,13 +77,13 @@ review_design_requirements
   → 人工审批并应用补丁
 ```
 
-当前版本仍不会自动推导完整的热、EMI、安全或器件额定值，也不会自动放宽需求。
-后续将增加不可行原因、最小放宽建议、容差/温度角落和需求到测量证据的追踪关系。
+当前版本仍不会自动推导完整的热、EMI、安全或器件额定值，也不会自动应用放宽建议。
+后续将增加更细的不可行原因、容差/温度角落和需求到测量证据的追踪关系。
 
 ## English summary
 
 `review_design_requirements` is a read-only pre-flight gate. It separates hard measured
 constraints, soft objectives, preferences, and assumptions, validates the existing
-measurement contract, and detects obvious contradictory bounds for one signal. A clean
-contract is not a proof of physical feasibility; simulation and approval remain separate
-steps.
+measurement contract, and detects obvious contradictory bounds for one signal. Conflicts
+include conservative minimum-relaxation candidates for human review. A clean contract is
+not a proof of physical feasibility; simulation and approval remain separate steps.
