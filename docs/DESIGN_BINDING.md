@@ -39,6 +39,12 @@ Multisim 14.x 的默认 `fmt=0` 可能返回连接关系表而非 SPICE；系统
 对连接关系表中的 R/C/L 元件，`snapshot_open_circuit` 还会通过 COM `RLCValue` 补回
 实际数值，并在 `parameter_evidence` / `parameter_coverage` 中记录成功和失败；这只补
 参数证据，不会自动放宽模型、隐藏引脚或未命名元件的人工审查门禁。
+当源文件是本机可读的 `.ms14` 时，工具会在临时目录解码其 XML，使用
+`CIRToInfoMapItem` 将内部编号映射到界面参考标号，并提取器件类型、数据库身份、
+厂家和端口清单。快照只保存身份字段和模型/模板 SHA-256，不保存模型正文。
+只有端口清单与连接报告完全一致时，才会解除对应器件的隐藏引脚告警。
+COM 未枚举且只连接一个网络的 `_uc...` 记录会作为 Multisim 报告辅助标记记录，
+不会再误计为实际元件。
 
 当前版本仍不会直接解析或修改任意 `.ms14` XML。若 Multisim 导出的网表包含当前解析器不
 支持的记录，默认会失败关闭；只有使用者明确设置 `allow_unsupported=true` 才会保留受限
@@ -61,3 +67,6 @@ workflows. Arbitrary `.ms14` parsing remains a separate, audited importer bounda
 For R/C/L entries in a connectivity report, `snapshot_open_circuit` also records verified COM
 `RLCValue` readings in `parameter_evidence`; this improves parameter visibility without
 silently approving missing models or hidden pins.
+For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
+through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
+are retained; licensed model bodies are never embedded in the snapshot.

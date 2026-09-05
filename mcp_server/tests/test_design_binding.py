@@ -15,11 +15,13 @@ from multisim_mcp.design_binding import (
     build_existing_design_snapshot,
     circuit_design_from_multisim_report,
     enrich_snapshot_with_com_parameters,
+    enrich_snapshot_with_native_metadata,
     load_existing_design_snapshot,
     validate_snapshot_for_binding,
 )
 from multisim_mcp.eda_core import CircuitDesign
 from multisim_mcp.requirement_contract import review_design_requirements
+from multisim_mcp.native_metadata import extract_native_component_metadata
 
 
 def _design() -> CircuitDesign:
@@ -55,6 +57,69 @@ def _design() -> CircuitDesign:
 
 
 class DesignBindingTest(unittest.TestCase):
+    def test_native_xml_identity_maps_internal_refdes_without_model_body(self) -> None:
+        xml = """<?xml version="1.0"?>
+<Root>
+  <Item CiID="1"><CiComponent LocalName="&amp;ASCU4"><Attributes>
+    <Item><CiaSpiceTmpltExprt String="&amp;ASCx%p pins 5T_Virtual" /></Item>
+    <Item><CiaCollString><strings>
+      <Item Value="&amp;ASCANALOG_VIRTUAL"/><Item Value="&amp;ASCOPAMP_5T_VIRTUAL"/>
+      <Item Value=""/><Item Value="&amp;ASC5T_Virtual"/>
+    </strings></CiaCollString></Item>
+  </Attributes><Ports><Item CiID="2"/><Item CiID="3"/></Ports></CiComponent></Item>
+  <Item CiID="2"><CiPort LocalName="&amp;ASCIN+" Component="1"/></Item>
+  <Item CiID="3"><CiPort LocalName="&amp;ASCOUT" Component="1"/></Item>
+  <CIRToInfoMapItem CIRKey="&amp;ASCU4"><RefDesInfo IRPrefix="&amp;ASCU" IRNumber="1"/></CIRToInfoMapItem>
+</Root>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "source.xml"
+            path.write_text(xml, encoding="utf-8")
+            evidence = extract_native_component_metadata(
+                str(path), expected_refdes={"U1"}
+            )
+        item = evidence["components"][0]
+        self.assertEqual(item["refdes"], "U1")
+        self.assertEqual(item["model_name"], "5T_Virtual")
+        self.assertEqual(item["port_names"], ["IN+", "OUT"])
+        self.assertTrue(item["model_verified"])
+        self.assertFalse(item["raw_model_material_included"])
+
+    def test_native_metadata_resolves_model_and_pin_specific_boundaries(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            """_ucTitle
+----
+0 Demo U1 IN+
+out Demo U1 OUT
+""",
+            circuit_info={"name": "Native"},
+            components=["U1"],
+            inputs=[],
+            outputs=[],
+        )
+        enriched = enrich_snapshot_with_native_metadata(
+            snapshot,
+            {
+                "kind": "multisim-mcp-native-component-metadata",
+                "state": "verified",
+                "components": [
+                    {
+                        "refdes": "U1",
+                        "model_name": "5T_Virtual",
+                        "model_verified": True,
+                        "port_names": ["IN+", "OUT"],
+                        "raw_model_material_included": False,
+                    }
+                ],
+            },
+        )
+        component = enriched["design"]["components"][0]
+        self.assertEqual(component["model"], "5T_Virtual")
+        self.assertTrue(component["annotations"]["native_metadata"]["pin_inventory_verified"])
+        codes = {item["code"] for item in enriched["boundary_review"]["findings"]}
+        self.assertNotIn("model_not_explicit", codes)
+        self.assertNotIn("hidden_pin_mapping_unverified", codes)
+        self.assertIn("connectivity_report_missing_parameters", codes)
+
     def test_parses_multisim_fixed_width_connectivity_report_as_bounded_topology(self) -> None:
         report = """_ucTitle (encoded, 12:00:00)
 ----
@@ -70,6 +135,28 @@ in LowPassFilter _uc257 1
         self.assertEqual(design.components[0].nodes, ("0", "in"))
         self.assertEqual(design.annotations["multisim_report"]["format"], "connectivity")
         self.assertFalse(assess_snapshot_boundaries(design)["optimization_safe"])
+
+    def test_snapshot_reconciles_generated_single_net_report_anchors(self) -> None:
+        snapshot = build_existing_design_snapshot(
+            """_ucTitle
+----
+0 Demo R1 1
+out Demo R1 2
+0 Demo _uc257 1
+""",
+            circuit_info={"name": "Opened"},
+            components=["R1"],
+            inputs=[],
+            outputs=[],
+        )
+        self.assertEqual(snapshot["cross_validation"]["state"], "verified")
+        self.assertEqual(
+            [item["refdes"] for item in snapshot["design"]["components"]], ["R1"]
+        )
+        self.assertEqual(
+            snapshot["design"]["annotations"]["multisim_report"]["ignored_connectivity_artifact_count"],
+            1,
+        )
 
     def test_merges_verified_rlc_values_without_relaxing_boundaries(self) -> None:
         snapshot = build_existing_design_snapshot(
