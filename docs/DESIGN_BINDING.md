@@ -26,6 +26,9 @@
 `snapshot_open_circuit` 可在 Windows COM 工作者中对当前已打开的 Multisim 工程执行安全的
 `ReportNetlist` 导出，并将解析后的 `CircuitDesign` 与 `circuit_info`、元件/输入/输出枚举
 证据写入独立目录。它不会覆盖源 `.ms14`；输出目录必须是新的快照目录。
+Multisim 14.x 的默认 `fmt=0` 可能返回连接关系表而非 SPICE；系统会识别并导入其中的
+网络/元件/引脚拓扑，但会把缺失的值、模型和隐藏引脚标为人工审查边界，不会把它当作
+可直接优化的完整设计。
 快照还包含 `cross_validation`：解析网表中的参考标号必须与 COM 元件枚举一致，否则
 `next_step` 为 `review_snapshot_mismatch`，不能直接进入需求绑定。
 `boundary_review` 会额外标出模型缺失、多端/耦合器件隐藏引脚以及未结构化网表记录；
@@ -43,6 +46,9 @@
 
 `snapshot_open_circuit` exports the currently open Multisim circuit through the isolated COM
 worker into a new directory, parses the reported netlist, and preserves enumeration evidence.
+Multisim 14.x may return a connectivity table for the default report format; the importer keeps
+its bounded topology while explicitly blocking optimization until values, models, and hidden
+pins are confirmed.
 `bind_requirement_review_to_design` is a read-only pre-optimization binding layer. It matches
 `V(node)` and `I(refdes)` requests against a validated `CircuitDesign` snapshot, accepts
 explicit signal aliases, and reports bounded R/C/L value candidates. It does not edit `.ms14`,

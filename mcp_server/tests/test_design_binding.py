@@ -13,6 +13,7 @@ from multisim_mcp.design_binding import (
     assess_snapshot_boundaries,
     bind_requirement_review_to_design,
     build_existing_design_snapshot,
+    circuit_design_from_multisim_report,
     load_existing_design_snapshot,
     validate_snapshot_for_binding,
 )
@@ -53,6 +54,22 @@ def _design() -> CircuitDesign:
 
 
 class DesignBindingTest(unittest.TestCase):
+    def test_parses_multisim_fixed_width_connectivity_report_as_bounded_topology(self) -> None:
+        report = """_ucTitle (encoded, 12:00:00)
+----
+_ucH1 _ucH2 _ucH3 _ucH4
+----
+0 LowPassFilter R1 1
+in LowPassFilter R1 2
+in LowPassFilter _uc257 1
+"""
+        design = circuit_design_from_multisim_report(report, title="Opened")
+        self.assertEqual(design.title, "Opened")
+        self.assertEqual([item.refdes for item in design.components], ["R1", "X_uc257"])
+        self.assertEqual(design.components[0].nodes, ("0", "in"))
+        self.assertEqual(design.annotations["multisim_report"]["format"], "connectivity")
+        self.assertFalse(assess_snapshot_boundaries(design)["optimization_safe"])
+
     def test_flags_model_and_hidden_pin_boundaries(self) -> None:
         design = CircuitDesign.from_dict(
             {
