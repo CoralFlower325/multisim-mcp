@@ -6,9 +6,13 @@ import hashlib
 import json
 import math
 import shutil
+import csv
+import io
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from .native_sweep import _numeric_series, rank_native_sweep_results
 
 
 def _digest(value: object) -> str:
@@ -131,7 +135,9 @@ def compare_native_sweep_baseline(ranking: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _report_markdown(
-    comparison: Mapping[str, Any], optimized_copy_name: str | None = None
+    comparison: Mapping[str, Any],
+    optimized_copy_name: str | None = None,
+    waveform_names: tuple[str, str] | None = None,
 ) -> str:
     objective = comparison["objective"]
     baseline = comparison["baseline"]
@@ -169,13 +175,132 @@ def _report_markdown(
             if optimized_copy_name
             else ""
         )
+        + (
+            f"\nWaveform evidence: [`{waveform_names[0]}`]({waveform_names[0]}) · "
+            f"[`{waveform_names[1]}`]({waveform_names[1]}).\n"
+            if waveform_names
+            else ""
+        )
     )
+
+
+def _same_parameters(left: object, right: Mapping[str, float]) -> bool:
+    if not isinstance(left, Mapping):
+        return False
+    try:
+        values = _numeric_parameters(left)
+    except ValueError:
+        return False
+    folded = {key.casefold(): value for key, value in values.items()}
+    return set(folded) == set(right) and all(
+        math.isclose(value, right[key], rel_tol=1e-9, abs_tol=1e-18)
+        for key, value in folded.items()
+    )
+
+
+def _waveform_series(
+    sweep_result: Mapping[str, Any], comparison: Mapping[str, Any]
+) -> tuple[list[float], list[float]]:
+    if sweep_result.get("state") != "completed":
+        raise ValueError("sweep_result must be completed for waveform evidence")
+    ranking = rank_native_sweep_results(sweep_result, comparison["objective"])
+    if ranking.get("ranking_digest") != comparison.get("ranking_digest"):
+        raise ValueError("sweep_result does not match comparison ranking_digest")
+    records = sweep_result.get("results")
+    if not isinstance(records, list):
+        raise ValueError("sweep_result.results must be an array")
+    originals = _numeric_parameters(sweep_result.get("original_values"))
+    folded_originals = {key.casefold(): value for key, value in originals.items()}
+    baseline_record: Mapping[str, Any] | None = None
+    best_record: Mapping[str, Any] | None = None
+    best_parameters = _numeric_parameters(comparison["best"].get("parameters"))
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        parameters = record.get("parameters")
+        if baseline_record is None and _same_parameters(parameters, folded_originals):
+            baseline_record = record
+        if best_record is None and _same_parameters(parameters, {
+            key.casefold(): value for key, value in best_parameters.items()
+        }):
+            best_record = record
+    if baseline_record is None or best_record is None:
+        raise ValueError("sweep_result is missing baseline or best waveform")
+    signal = str(comparison["objective"]["signal"])
+    baseline = _numeric_series(baseline_record.get("analysis"), signal)
+    best = _numeric_series(best_record.get("analysis"), signal)
+    if len(baseline) < 2 or len(best) < 2:
+        raise ValueError("baseline and best waveforms need at least two samples")
+    return baseline, best
+
+
+def _downsample(values: list[float], maximum: int = 1000) -> list[float]:
+    if len(values) <= maximum:
+        return values
+    step = (len(values) - 1) / (maximum - 1)
+    return [values[round(index * step)] for index in range(maximum)]
+
+
+def _write_waveform_artifacts(
+    root: Path, baseline: list[float], best: list[float]
+) -> tuple[Path, Path]:
+    baseline = _downsample(baseline)
+    best = _downsample(best)
+    csv_path = root / "waveform-comparison.csv"
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(["sample_index", "baseline", "best"])
+    for index in range(max(len(baseline), len(best))):
+        writer.writerow([
+            index,
+            f"{baseline[index]:.17g}" if index < len(baseline) else "",
+            f"{best[index]:.17g}" if index < len(best) else "",
+        ])
+    csv_path.write_text(stream.getvalue(), encoding="utf-8", newline="")
+
+    svg_path = root / "waveform-comparison.svg"
+    width, height = 960, 420
+    left, top, right, bottom = 64, 24, 24, 48
+    plot_width, plot_height = width - left - right, height - top - bottom
+    values = baseline + best
+    low, high = min(values), max(values)
+    span = high - low or 1.0
+
+    def points(series: list[float]) -> str:
+        if len(series) == 1:
+            x = left + plot_width / 2
+            y = top + (high - series[0]) / span * plot_height
+            return f"{x:.2f},{y:.2f}"
+        return " ".join(
+            f"{left + index / (len(series) - 1) * plot_width:.2f},"
+            f"{top + (high - value) / span * plot_height:.2f}"
+            for index, value in enumerate(series)
+        )
+
+    svg_path.write_text(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        f"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width} {height}\" "
+        f"role=\"img\" aria-label=\"Baseline and optimized waveform comparison\">"
+        f"<rect width=\"100%\" height=\"100%\" fill=\"white\"/>"
+        f"<line x1=\"{left}\" y1=\"{top + plot_height}\" x2=\"{left + plot_width}\" y2=\"{top + plot_height}\" stroke=\"#64748b\"/>"
+        f"<line x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{top + plot_height}\" stroke=\"#64748b\"/>"
+        f"<polyline fill=\"none\" stroke=\"#64748b\" stroke-width=\"2\" points=\"{points(baseline)}\"/>"
+        f"<polyline fill=\"none\" stroke=\"#2563eb\" stroke-width=\"2\" points=\"{points(best)}\"/>"
+        f"<text x=\"{left}\" y=\"18\" font-family=\"sans-serif\" font-size=\"16\">Baseline vs optimized waveform</text>"
+        f"<text x=\"{left}\" y=\"{height - 12}\" font-family=\"sans-serif\" font-size=\"12\">Sample index</text>"
+        f"<text x=\"10\" y=\"{top + plot_height / 2}\" transform=\"rotate(-90 10 {top + plot_height / 2})\" font-family=\"sans-serif\" font-size=\"12\">Amplitude</text>"
+        "<rect x=760" + f" y=\"28\" width=\"14\" height=\"4\" fill=\"#64748b\"/><text x=\"782\" y=\"34\" font-family=\"sans-serif\" font-size=\"12\">Baseline</text>"
+        "<rect x=760" + f" y=\"48\" width=\"14\" height=\"4\" fill=\"#2563eb\"/><text x=\"782\" y=\"54\" font-family=\"sans-serif\" font-size=\"12\">Optimized</text></svg>\n",
+        encoding="utf-8",
+    )
+    return csv_path, svg_path
 
 
 def export_native_sweep_report(
     comparison: Mapping[str, Any],
     output_dir: str,
     optimized_copy_path: str | None = None,
+    sweep_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a report package and optionally include an optimized .ms14 copy."""
     if not isinstance(comparison, Mapping) or comparison.get("state") not in {
@@ -219,14 +344,25 @@ def export_native_sweep_report(
     if optimized_source is not None:
         optimized_copy = root / "optimized-circuit.ms14"
         shutil.copy2(optimized_source, optimized_copy)
+    waveform_paths: tuple[Path, Path] | None = None
+    if sweep_result is not None:
+        waveform_paths = _write_waveform_artifacts(
+            root, *_waveform_series(sweep_result, verified)
+        )
     report_path.write_text(
-        _report_markdown(verified, optimized_copy.name if optimized_copy else None),
+        _report_markdown(
+            verified,
+            optimized_copy.name if optimized_copy else None,
+            tuple(path.name for path in waveform_paths) if waveform_paths else None,
+        ),
         encoding="utf-8",
     )
     files = []
     artifact_paths = [comparison_path, report_path]
     if optimized_copy is not None:
         artifact_paths.append(optimized_copy)
+    if waveform_paths is not None:
+        artifact_paths.extend(waveform_paths)
     for path in artifact_paths:
         data = path.read_bytes()
         files.append(
@@ -248,6 +384,12 @@ def export_native_sweep_report(
             "source_path": str(optimized_source),
             "sha256": next(item["sha256"] for item in files if item["name"] == optimized_copy.name),
         }
+    if waveform_paths is not None:
+        manifest["waveform_evidence"] = {
+            "csv": waveform_paths[0].name,
+            "svg": waveform_paths[1].name,
+            "sample_limit": 1000,
+        }
     manifest["manifest_digest"] = _digest(manifest)
     manifest_path = root / "manifest.json"
     manifest_path.write_text(
@@ -262,6 +404,8 @@ def export_native_sweep_report(
         "manifest_path": str(manifest_path),
         "manifest_digest": manifest["manifest_digest"],
         "optimized_copy_path": str(optimized_copy) if optimized_copy else None,
+        "waveform_csv_path": str(waveform_paths[0]) if waveform_paths else None,
+        "waveform_svg_path": str(waveform_paths[1]) if waveform_paths else None,
         "source_mutated": False,
     }
 

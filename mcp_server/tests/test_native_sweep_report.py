@@ -34,6 +34,19 @@ def _ranking() -> dict:
     )
 
 
+def _sweep() -> dict:
+    return {
+        "state": "completed",
+        "circuit": {"file": "C:/circuits/source.ms14"},
+        "original_values": {"R1": 50.0},
+        "results": [
+            {"parameters": {"R1": 40.0}, "analysis": {"rows": [[0.0, 0.4]]}},
+            {"parameters": {"R1": 50.0}, "analysis": {"rows": [[0.0, 10.8]]}},
+            {"parameters": {"R1": 60.0}, "analysis": {"rows": [[0.0, 0.75]]}},
+        ],
+    }
+
+
 class NativeSweepReportTest(unittest.TestCase):
     def test_compares_best_candidate_with_original_baseline(self) -> None:
         comparison = compare_native_sweep_baseline(_ranking())
@@ -133,6 +146,36 @@ class NativeSweepReportTest(unittest.TestCase):
                 manifest["optimized_copy"]["sha256"],
                 hashlib.sha256(packaged.read_bytes()).hexdigest(),
             )
+
+    def test_exports_waveform_csv_and_svg_when_sweep_is_attached(self) -> None:
+        sweep = _sweep()
+        comparison = compare_native_sweep_baseline(_ranking())
+        with tempfile.TemporaryDirectory() as root:
+            output_dir = Path(root) / "waveforms"
+            result = export_native_sweep_report(
+                comparison, str(output_dir), sweep_result=sweep
+            )
+            csv_path = Path(result["waveform_csv_path"])
+            svg_path = Path(result["waveform_svg_path"])
+            self.assertTrue(csv_path.is_file())
+            self.assertTrue(svg_path.is_file())
+            self.assertIn("sample_index,baseline,best", csv_path.read_text(encoding="utf-8"))
+            self.assertIn("Baseline vs optimized waveform", svg_path.read_text(encoding="utf-8"))
+            report = Path(result["report_path"]).read_text(encoding="utf-8")
+            self.assertIn("waveform-comparison.csv", report)
+            manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["waveform_evidence"]["sample_limit"], 1000)
+            self.assertEqual(len(manifest["files"]), 4)
+
+    def test_rejects_sweep_with_mismatched_ranking(self) -> None:
+        comparison = compare_native_sweep_baseline(_ranking())
+        sweep = _sweep()
+        sweep["results"][2]["analysis"]["rows"] = [[0.0, 1.25]]
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(ValueError, "ranking_digest"):
+                export_native_sweep_report(
+                    comparison, str(Path(root) / "mismatch"), sweep_result=sweep
+                )
 
     def test_rejects_invalid_optimized_copy(self) -> None:
         comparison = compare_native_sweep_baseline(_ranking())
