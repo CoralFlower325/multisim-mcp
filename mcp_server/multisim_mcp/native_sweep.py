@@ -301,12 +301,30 @@ def prepare_native_sweep_patch(
         "source_mutated": False,
         "next_step": "approve_verified_patch_application",
     }
+    if isinstance(verified_ranking.get("circuit"), Mapping):
+        payload["circuit"] = dict(verified_ranking["circuit"])
     payload["draft_digest"] = _digest(payload)
     return payload
+
+
+def validate_native_sweep_patch_draft(draft: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a non-mutating native sweep patch draft before copy application."""
+    if not isinstance(draft, Mapping) or draft.get("state") != "ready-for-approval":
+        raise ValueError("draft must be ready-for-approval")
+    verified = _validate_embedded_digest(draft, "draft_digest")
+    patch = DesignPatch.from_dict(verified.get("patch"))
+    if patch.metadata.get("source") != "native-multisim-parameter-sweep":
+        raise ValueError("draft patch source is invalid")
+    circuit = verified.get("circuit")
+    if not isinstance(circuit, Mapping) or not isinstance(circuit.get("file"), str) or not circuit["file"].strip():
+        raise ValueError("draft.circuit.file is required")
+    verified["_patch"] = patch
+    return verified
 
 
 __all__ = [
     "prepare_native_sweep",
     "prepare_native_sweep_patch",
     "rank_native_sweep_results",
+    "validate_native_sweep_patch_draft",
 ]

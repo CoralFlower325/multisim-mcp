@@ -22,6 +22,9 @@
   但不会修改工程或自动写入最佳参数。
 - `prepare_native_sweep_patch` 将最佳候选转换为标准、可逆的 `DesignPatch` 草案，后续仍须走
   现有的验证与审批流程；该步骤不写回 `.ms14`。
+- `apply_native_sweep_patch_to_copy` 只接受带摘要的草案和显式审批，写入新的 `.ms14` 副本后
+  重新打开源工程，原文件不会被覆盖；审批还必须确认源工程已保存，因为重新打开不会保留
+  Multisim 界面中的未保存改动。
 
 ## 返回状态
 
@@ -89,6 +92,9 @@ best-value patch.
 `prepare_native_sweep_patch` converts that best candidate into the existing reversible
 `DesignPatch` contract. The draft remains non-mutating and must pass the normal verification and
 approval workflow before any persisted design is changed; direct `.ms14` write-back remains off.
+`apply_native_sweep_patch_to_copy` is the guarded persistence step: it requires the exact draft
+digest, explicit approval, and a saved-source acknowledgement, writes a new `.ms14` copy, and
+reopens the original source without overwriting it. Unsaved Multisim UI changes are not preserved.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.

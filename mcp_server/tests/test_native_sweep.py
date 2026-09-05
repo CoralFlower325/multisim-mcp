@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 import hashlib
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from multisim_mcp import server
@@ -168,6 +170,51 @@ class NativeSweepTest(unittest.TestCase):
         self.assertTrue(result["restored_original_values"])
         self.assertEqual(fake.set_rlc_value.call_args_list[-1].args, ("R1", 1000.0))
         self.assertFalse(result["source_mutated"])
+
+    def test_applies_only_to_copy_and_reopens_source(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            source = f"{root}/source.ms14"
+            destination = f"{root}/optimized.ms14"
+            with open(source, "wb") as handle:
+                handle.write(b"source-circuit")
+            readiness = _readiness()
+            ranking = rank_native_sweep_results(
+                {
+                    "state": "completed",
+                    "original_values": {"R1": 1000.0},
+                    "circuit": {"file": source},
+                    "results": [
+                        {"parameters": {"R1": 1200.0}, "analysis": {"rows": [[1.0]]}}
+                    ],
+                },
+                {"signal": "V(out)", "metric": "final", "direction": "maximize"},
+            )
+            draft = prepare_native_sweep_patch(readiness, ranking)
+            fake = Mock()
+            fake.circuit_info.return_value = {"file": source}
+            fake.get_rlc_value.return_value = {"value": 1000.0}
+            fake.open_circuit.return_value = {"file": destination}
+            fake.save_circuit.return_value = destination
+            with patch.object(server, "client", fake):
+                result = server.apply_native_sweep_patch_to_copy(
+                    draft,
+                    destination,
+                    {
+                        "approved": True,
+                        "write_copy": True,
+                        "reopen_source": True,
+                        "preserve_source": True,
+                        "source_saved": True,
+                        "draft_digest": draft["draft_digest"],
+                    },
+                )
+            self.assertEqual(result["state"], "completed")
+            self.assertTrue(result["saved_copy"])
+            self.assertTrue(result["reopened_source"])
+            self.assertEqual(Path(source).read_bytes(), b"source-circuit")
+            self.assertEqual(Path(destination).read_bytes(), b"source-circuit")
+            self.assertEqual(fake.set_rlc_value.call_args.args, ("R1", 1200.0))
+            self.assertEqual(Path(fake.open_circuit.call_args_list[-1].args[0]), Path(source).resolve())
 
 
 if __name__ == "__main__":
