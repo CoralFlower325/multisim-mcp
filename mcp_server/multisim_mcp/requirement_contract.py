@@ -300,6 +300,72 @@ def _normalise_objectives(value: object) -> list[dict[str, Any]]:
     return result
 
 
+def _optimization_handoff(
+    hard_constraints: Sequence[Mapping[str, Any]],
+    objectives: Sequence[Mapping[str, Any]],
+    conflicts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Project review data into an explicit optimizer handoff.
+
+    Ranking services measure hard requirements, so a soft objective can only
+    be promoted automatically when it identifies exactly one matching hard
+    measurement. Ambiguous and unmeasured objectives remain visible instead
+    of being guessed or silently dropped.
+    """
+    by_identity: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
+    for item in hard_constraints:
+        by_identity.setdefault(_identity(item), []).append(item)
+    single_candidates: list[dict[str, Any]] = []
+    multi_candidates: list[dict[str, Any]] = []
+    unmapped: list[dict[str, Any]] = []
+    for objective in objectives:
+        matches = by_identity.get(_identity(objective), [])
+        if len(matches) == 1:
+            candidate: dict[str, Any] = {
+                "objective_id": objective["id"],
+                "requirement_id": matches[0]["id"],
+                "goal": objective["goal"],
+                "weight": objective["weight"],
+            }
+            if objective.get("goal") == "target":
+                candidate["target"] = objective["target"]
+            single_candidates.append(candidate)
+            multi_candidates.append({**candidate, "epsilon": 0.0})
+        elif not matches:
+            unmapped.append(
+                {
+                    "objective_id": objective["id"],
+                    "reason": "no_matching_hard_measurement",
+                    "message": "软目标没有同指标的硬测量约束，无法直接进入当前验收型优化器。",
+                }
+            )
+        else:
+            unmapped.append(
+                {
+                    "objective_id": objective["id"],
+                    "reason": "ambiguous_hard_measurement",
+                    "requirement_ids": [item["id"] for item in matches],
+                    "message": "软目标匹配到多个硬测量约束，需要人工指定绑定关系。",
+                }
+            )
+    if conflicts:
+        state = "blocked"
+    elif not objectives:
+        state = "needs-objectives"
+    elif unmapped:
+        state = "partial"
+    else:
+        state = "ready"
+    return {
+        "state": state,
+        "requirements": [dict(item) for item in hard_constraints],
+        "single_objective_candidates": single_candidates,
+        "multi_objective_candidates": multi_candidates,
+        "unmapped_objectives": unmapped,
+        "manual_review_required": bool(conflicts or unmapped),
+    }
+
+
 def review_design_requirements(
     hard_constraints: list[dict[str, Any]],
     *,
@@ -380,6 +446,11 @@ def review_design_requirements(
                     "message": "建议为频率、增益或带宽类指标明确单位，避免跨工具解释不一致。",
                 }
             )
+    optimization_handoff = _optimization_handoff(
+        normalized_hard,
+        objectives,
+        conflicts,
+    )
     state = "conflict" if conflicts else ("ready-for-baseline" if normalized_hard else "needs-input")
     envelope: dict[str, Any] = {
         "schema_version": REQUIREMENT_CONTRACT_SCHEMA_VERSION,
@@ -393,6 +464,7 @@ def review_design_requirements(
         "assumptions": normalized_assumptions,
         "conflicts": conflicts,
         "relaxation_suggestions": relaxation_suggestions,
+        "optimization_handoff": optimization_handoff,
         "warnings": warnings,
         "simulation_started": False,
         "artifacts_generated": [],
