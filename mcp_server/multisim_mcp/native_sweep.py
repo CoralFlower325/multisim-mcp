@@ -88,4 +88,121 @@ def prepare_native_sweep(
     return combinations, [refdes for refdes, _ in normalized]
 
 
-__all__ = ["prepare_native_sweep"]
+_METRICS = frozenset({"mean", "min", "max", "peak_to_peak", "rms", "final", "abs_max"})
+_DIRECTIONS = frozenset({"minimize", "maximize", "target"})
+
+
+def _numeric_series(payload: Any, signal: str) -> list[float]:
+    """Extract one output series from the normalized COM result envelope."""
+    if not isinstance(payload, Mapping):
+        return []
+    rows = payload.get("rows")
+    if isinstance(rows, (list, tuple)):
+        numeric_rows = [
+            [float(value) for value in row if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))]
+            for row in rows
+            if isinstance(row, (list, tuple))
+        ]
+        numeric_rows = [row for row in numeric_rows if row]
+        if numeric_rows:
+            # A single-output request normally has one row; for multi-row envelopes
+            # the final row is the requested signal rather than the shared x-axis.
+            return numeric_rows[-1]
+    results = payload.get("results")
+    if isinstance(results, Mapping):
+        nested = results.get(signal)
+        if nested is None and len(results) == 1:
+            nested = next(iter(results.values()))
+        return _numeric_series(nested, signal)
+    nested = payload.get(signal)
+    return _numeric_series(nested, signal)
+
+
+def _metric_value(series: list[float], metric: str) -> float:
+    if metric == "mean":
+        return sum(series) / len(series)
+    if metric == "min":
+        return min(series)
+    if metric == "max":
+        return max(series)
+    if metric == "peak_to_peak":
+        return max(series) - min(series)
+    if metric == "rms":
+        return math.sqrt(sum(value * value for value in series) / len(series))
+    if metric == "final":
+        return series[-1]
+    return max(abs(value) for value in series)
+
+
+def rank_native_sweep_results(
+    sweep_result: Mapping[str, Any], objective: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Rank completed native sweep records against one explicit scalar objective."""
+    if not isinstance(sweep_result, Mapping) or sweep_result.get("state") != "completed":
+        raise ValueError("sweep_result must be a completed native sweep result")
+    records = sweep_result.get("results")
+    if not isinstance(records, list) or not records or len(records) > 64:
+        raise ValueError("sweep_result.results must contain 1..64 records")
+    if not isinstance(objective, Mapping):
+        raise ValueError("objective must be an object")
+    allowed = {"signal", "metric", "direction", "target"}
+    unknown = set(objective) - allowed
+    if unknown:
+        raise ValueError(f"objective contains unknown fields: {sorted(unknown)}")
+    signal = objective.get("signal")
+    metric = str(objective.get("metric", "")).strip().lower()
+    direction = str(objective.get("direction", "")).strip().lower()
+    if not isinstance(signal, str) or not signal.strip() or len(signal) > 256 or "\x00" in signal:
+        raise ValueError("objective.signal must be a non-empty signal name")
+    if metric not in _METRICS:
+        raise ValueError(f"objective.metric must be one of: {', '.join(sorted(_METRICS))}")
+    if direction not in _DIRECTIONS:
+        raise ValueError("objective.direction must be minimize, maximize, or target")
+    target = objective.get("target")
+    if direction == "target":
+        if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(float(target)):
+            raise ValueError("objective.target must be a finite number for target direction")
+        target = float(target)
+    elif target is not None:
+        raise ValueError("objective.target is only valid with target direction")
+
+    ranked: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            skipped.append({"index": index, "reason": "record is not an object"})
+            continue
+        series = _numeric_series(record.get("analysis"), signal.strip())
+        if not series:
+            skipped.append({"index": index, "reason": "signal has no finite samples"})
+            continue
+        value = _metric_value(series, metric)
+        score = value if direction == "minimize" else -value if direction == "maximize" else abs(value - float(target))
+        ranked.append(
+            {
+                "index": index,
+                "parameters": record.get("parameters", {}),
+                "signal": signal.strip(),
+                "metric": metric,
+                "direction": direction,
+                "sample_count": len(series),
+                "value": value,
+                "score": score,
+            }
+        )
+    ranked.sort(key=lambda item: (float(item["score"]), int(item["index"])))
+    payload: dict[str, Any] = {
+        "state": "completed" if ranked else "no-scorable-results",
+        "objective": {"signal": signal.strip(), "metric": metric, "direction": direction, **({"target": target} if target is not None else {})},
+        "ranked_results": ranked,
+        "skipped_results": skipped,
+        "best": ranked[0] if ranked else None,
+        "source_mutated": False,
+    }
+    payload["ranking_digest"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+__all__ = ["prepare_native_sweep", "rank_native_sweep_results"]

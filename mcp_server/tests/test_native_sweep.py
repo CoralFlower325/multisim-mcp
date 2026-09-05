@@ -6,7 +6,7 @@ import json
 from unittest.mock import Mock, patch
 
 from multisim_mcp import server
-from multisim_mcp.native_sweep import prepare_native_sweep
+from multisim_mcp.native_sweep import prepare_native_sweep, rank_native_sweep_results
 
 
 def _readiness() -> dict:
@@ -67,6 +67,28 @@ class NativeSweepTest(unittest.TestCase):
         tampered["candidates"][0]["refdes"] = "R9"
         with self.assertRaisesRegex(ValueError, "readiness_digest"):
             prepare_native_sweep(tampered, [{"refdes": "R1", "values": [1]}], _approval())
+
+    def test_ranks_results_by_target_distance(self) -> None:
+        result = rank_native_sweep_results(
+            {
+                "state": "completed",
+                "results": [
+                    {"parameters": {"R1": 900.0}, "analysis": {"rows": [[0.7, 0.8, 0.9]]}},
+                    {"parameters": {"R1": 1000.0}, "analysis": {"rows": [[1.0, 1.0, 1.0]]}},
+                ],
+            },
+            {"signal": "V(out)", "metric": "mean", "direction": "target", "target": 1.0},
+        )
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["best"]["index"], 1)
+        self.assertRegex(result["ranking_digest"], r"^[0-9a-f]{64}$")
+
+    def test_rejects_invalid_objective(self) -> None:
+        with self.assertRaisesRegex(ValueError, "objective.metric"):
+            rank_native_sweep_results(
+                {"state": "completed", "results": [{"analysis": {"rows": [[1.0]]}}]},
+                {"signal": "V(out)", "metric": "median", "direction": "minimize"},
+            )
 
     def test_server_sweep_restores_original_values(self) -> None:
         fake = Mock()
