@@ -74,7 +74,9 @@ Stable and verified on Multisim 14.3:
   transient/AC grid against the open circuit's R/L/C values and restores every
   original value even when a run fails; it never saves the source `.ms14`.
 - `rank_native_sweep_results` scores the returned records against one explicit
-  signal objective and produces a deterministic, digest-protected ranking.
+  signal objective and produces a deterministic, digest-protected ranking. It
+  also marks all-zero, constant, and low-information outputs instead of silently
+  treating them as optimization evidence.
 - `prepare_native_sweep_patch` converts the best ranked candidate into the same
   reversible `DesignPatch` contract used by the existing approval workflow.
 - `apply_native_sweep_patch_to_copy` requires an exact draft digest and explicit

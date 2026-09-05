@@ -92,6 +92,7 @@ class NativeSweepTest(unittest.TestCase):
         self.assertEqual(result["state"], "completed")
         self.assertEqual(result["best"]["index"], 1)
         self.assertRegex(result["ranking_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(result["quality_state"], "valid")
 
     def test_rejects_invalid_objective(self) -> None:
         with self.assertRaisesRegex(ValueError, "objective.metric"):
@@ -99,6 +100,21 @@ class NativeSweepTest(unittest.TestCase):
                 {"state": "completed", "results": [{"analysis": {"rows": [[1.0]]}}]},
                 {"signal": "V(out)", "metric": "median", "direction": "minimize"},
             )
+
+    def test_marks_degenerate_zero_outputs(self) -> None:
+        result = rank_native_sweep_results(
+            {
+                "state": "completed",
+                "results": [
+                    {"parameters": {"R1": 900.0}, "analysis": {"rows": [[0.0]]}},
+                    {"parameters": {"R1": 1000.0}, "analysis": {"rows": [[0.0]]}},
+                ],
+            },
+            {"signal": "V(out)", "metric": "final", "direction": "maximize"},
+        )
+        self.assertEqual(result["quality_state"], "degenerate-output")
+        self.assertEqual(result["quality_counts"]["degenerate_zero"], 2)
+        self.assertTrue(result["warnings"])
 
     def test_prepares_standard_reversible_patch(self) -> None:
         ranking = rank_native_sweep_results(

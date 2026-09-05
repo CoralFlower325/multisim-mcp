@@ -19,7 +19,7 @@
 - `run_native_parameter_sweep` 接收该就绪报告和审批对象，执行受限 DC/瞬态/AC 参数网格；
   它只在当前内存工程中临时改值，结束或异常时恢复全部原值，不调用 `Save`/`SaveAs`。
 - `rank_native_sweep_results` 可按一个明确的信号目标对扫描记录评分排序，结果带有摘要，
-  但不会修改工程或自动写入最佳参数。
+  但不会修改工程或自动写入最佳参数；结果还会标记全零、恒定和样本不足等低信息输出。
 - `prepare_native_sweep_patch` 将最佳候选转换为标准、可逆的 `DesignPatch` 草案，后续仍须走
   现有的验证与审批流程；该步骤不写回 `.ms14`。
 - `apply_native_sweep_patch_to_copy` 只接受带摘要的草案和显式审批，写入新的 `.ms14` 副本后
