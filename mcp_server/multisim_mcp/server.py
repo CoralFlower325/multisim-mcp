@@ -1880,9 +1880,12 @@ def export_native_sweep_report(
     comparison: Mapping[str, Any],
     output_dir: str,
     optimized_copy_path: str | None = None,
+    sweep_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Export a bilingual native sweep comparison report and integrity manifest."""
-    return write_native_sweep_report(comparison, output_dir, optimized_copy_path)
+    return write_native_sweep_report(
+        comparison, output_dir, optimized_copy_path, sweep_result
+    )
 
 
 @mcp.tool()

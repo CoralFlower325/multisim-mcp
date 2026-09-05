@@ -28,7 +28,7 @@
   Multisim 界面中的未保存改动。
 - `compare_native_sweep_baseline` 从候选网格中识别原始参数组并计算目标改善量；
   `export_native_sweep_report` 输出中英双语 Markdown、结构化 JSON 和完整性清单；传入已批准的
-  `.ms14` 副本时会一并打包并建立相对链接。
+  `.ms14` 副本时会一并打包并建立相对链接；传入原始扫描结果后还会输出基线/优化波形 CSV 与 SVG。
 
 ## 返回状态
 
@@ -105,6 +105,7 @@ reopens the original source without overwriting it. Unsaved Multisim UI changes 
 improvement. `export_native_sweep_report` writes a bilingual Markdown report, structured JSON,
 and a SHA-256 integrity manifest. An approved `.ms14` copy can be packaged alongside the report
 with a relative link and its own integrity entry.
+Passing the completed sweep result also adds baseline/optimized waveform CSV and SVG evidence.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.

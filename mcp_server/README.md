@@ -88,6 +88,8 @@ Stable and verified on Multisim 14.3:
   writes a Chinese-first Markdown report, JSON evidence, and SHA-256 manifest.
   Passing an approved `.ms14` copy also packages it into the report directory
   with a relative link and integrity metadata.
+  Passing the completed sweep result additionally emits baseline/optimized
+  waveform CSV and SVG evidence linked from the report.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs
