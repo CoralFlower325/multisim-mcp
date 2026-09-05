@@ -61,7 +61,7 @@ class McpStdioSmokeTest(unittest.IsolatedAsyncioTestCase):
                 mode
             )
             self.assertEqual(protocol, expected_protocol)
-            self.assertEqual(len(names), 81)
+            self.assertEqual(len(names), 82)
             self.assertEqual(len(prompts), 5)
             self.assertEqual(len(resources), 20)
 

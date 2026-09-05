@@ -70,6 +70,9 @@ Stable and verified on Multisim 14.3:
   Parsed component references are cross-checked against COM enumeration before
   the snapshot recommends requirement binding. Model-sensitive devices and
   hidden-pin carriers are surfaced as manual-review boundaries.
+- `run_native_parameter_sweep` executes an explicitly approved, bounded DC/
+  transient/AC grid against the open circuit's R/L/C values and restores every
+  original value even when a run fails; it never saves the source `.ms14`.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs
