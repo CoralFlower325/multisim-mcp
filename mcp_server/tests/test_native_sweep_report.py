@@ -112,6 +112,36 @@ class NativeSweepReportTest(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "must be empty"):
                 export_native_sweep_report(comparison, str(occupied))
 
+    def test_packages_optimized_copy_with_relative_report_link(self) -> None:
+        comparison = compare_native_sweep_baseline(_ranking())
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "optimized.ms14"
+            source.write_bytes(b"optimized-circuit")
+            output_dir = Path(root) / "package"
+            result = export_native_sweep_report(
+                comparison, str(output_dir), str(source)
+            )
+            packaged = output_dir / "optimized-circuit.ms14"
+            self.assertEqual(packaged.read_bytes(), source.read_bytes())
+            self.assertEqual(result["optimized_copy_path"], str(packaged.resolve()))
+            report = Path(result["report_path"]).read_text(encoding="utf-8")
+            self.assertIn("optimized-circuit.ms14", report)
+            manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["files"]), 3)
+            self.assertEqual(manifest["optimized_copy"]["name"], "optimized-circuit.ms14")
+            self.assertEqual(
+                manifest["optimized_copy"]["sha256"],
+                hashlib.sha256(packaged.read_bytes()).hexdigest(),
+            )
+
+    def test_rejects_invalid_optimized_copy(self) -> None:
+        comparison = compare_native_sweep_baseline(_ranking())
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(ValueError, "must end with .ms14"):
+                export_native_sweep_report(
+                    comparison, str(Path(root) / "report"), str(Path(root) / "bad.txt")
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -129,7 +130,9 @@ def compare_native_sweep_baseline(ranking: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _report_markdown(comparison: Mapping[str, Any]) -> str:
+def _report_markdown(
+    comparison: Mapping[str, Any], optimized_copy_name: str | None = None
+) -> str:
     objective = comparison["objective"]
     baseline = comparison["baseline"]
     best = comparison["best"]
@@ -161,13 +164,20 @@ def _report_markdown(comparison: Mapping[str, Any]) -> str:
         f"The best candidate is **{comparison['state']}** relative to the original-value baseline. "
         f"The measured `{objective['metric']}` changed from `{float(baseline['value']):.12g}` "
         f"to `{float(best['value']):.12g}`. Source circuit mutation: `false`.\n"
+        + (
+            f"\nOptimized Multisim copy: [`{optimized_copy_name}`]({optimized_copy_name}).\n"
+            if optimized_copy_name
+            else ""
+        )
     )
 
 
 def export_native_sweep_report(
-    comparison: Mapping[str, Any], output_dir: str
+    comparison: Mapping[str, Any],
+    output_dir: str,
+    optimized_copy_path: str | None = None,
 ) -> dict[str, Any]:
-    """Write a bilingual Markdown report, JSON comparison, and integrity manifest."""
+    """Write a report package and optionally include an optimized .ms14 copy."""
     if not isinstance(comparison, Mapping) or comparison.get("state") not in {
         "improved",
         "unchanged",
@@ -186,15 +196,38 @@ def export_native_sweep_report(
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
         raise FileExistsError("report output directory must be empty")
+    optimized_source: Path | None = None
+    if optimized_copy_path is not None:
+        if (
+            not isinstance(optimized_copy_path, str)
+            or not optimized_copy_path.strip()
+            or "\x00" in optimized_copy_path
+        ):
+            raise ValueError("optimized_copy_path must be a non-empty path")
+        optimized_source = Path(optimized_copy_path).expanduser().resolve()
+        if optimized_source.suffix.casefold() != ".ms14":
+            raise ValueError("optimized_copy_path must end with .ms14")
+        if optimized_source.is_symlink() or not optimized_source.is_file():
+            raise ValueError("optimized_copy_path must be an existing regular file")
     comparison_path = root / "native-optimization-comparison.json"
     report_path = root / "native-optimization-report.md"
     comparison_path.write_text(
         json.dumps(verified, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    report_path.write_text(_report_markdown(verified), encoding="utf-8")
+    optimized_copy: Path | None = None
+    if optimized_source is not None:
+        optimized_copy = root / "optimized-circuit.ms14"
+        shutil.copy2(optimized_source, optimized_copy)
+    report_path.write_text(
+        _report_markdown(verified, optimized_copy.name if optimized_copy else None),
+        encoding="utf-8",
+    )
     files = []
-    for path in (comparison_path, report_path):
+    artifact_paths = [comparison_path, report_path]
+    if optimized_copy is not None:
+        artifact_paths.append(optimized_copy)
+    for path in artifact_paths:
         data = path.read_bytes()
         files.append(
             {
@@ -209,6 +242,12 @@ def export_native_sweep_report(
         "comparison_digest": verified["comparison_digest"],
         "files": files,
     }
+    if optimized_copy is not None:
+        manifest["optimized_copy"] = {
+            "name": optimized_copy.name,
+            "source_path": str(optimized_source),
+            "sha256": next(item["sha256"] for item in files if item["name"] == optimized_copy.name),
+        }
     manifest["manifest_digest"] = _digest(manifest)
     manifest_path = root / "manifest.json"
     manifest_path.write_text(
@@ -222,6 +261,7 @@ def export_native_sweep_report(
         "report_path": str(report_path),
         "manifest_path": str(manifest_path),
         "manifest_digest": manifest["manifest_digest"],
+        "optimized_copy_path": str(optimized_copy) if optimized_copy else None,
         "source_mutated": False,
     }
 
