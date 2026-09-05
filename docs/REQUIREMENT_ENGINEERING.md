@@ -71,6 +71,8 @@
 `multi_objective_candidates`，可作为 `optimize_design` / `global_optimize_design`
 规范的起点；没有匹配或匹配多个时会进入 `unmapped_objectives`，需要人工补充测量或
 绑定关系。该交接包不会启动优化，也不会改变原需求。
+后续流程接收 JSON 前可调用 `validate_requirement_review` 校验 `contract_digest`；摘要不匹配
+时必须退回重新审查，不能继续使用被修改的交接包。
 
 ## 与优化流程的衔接
 
@@ -94,4 +96,5 @@ measurement contract, and detects obvious contradictory bounds for one signal. C
 include conservative minimum-relaxation candidates for human review. A clean contract is
 not a proof of physical feasibility. Matching soft objectives are projected into an explicit
 optimizer handoff, while ambiguous objectives remain for human review; simulation and
-approval remain separate steps.
+approval remain separate steps. The `contract_digest` can be checked before a downstream
+handoff so edits made between planning and optimization fail closed.
