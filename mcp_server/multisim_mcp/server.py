@@ -78,6 +78,9 @@ from multisim_mcp.design_plans import (
     plan_design_options as build_design_plan_options,
     select_design_option as select_planned_design_option,
 )
+from multisim_mcp.requirement_contract import (
+    review_design_requirements as build_requirement_review,
+)
 from multisim_mcp.design_specifications import (
     prepare_design_specification as build_design_specification,
 )
@@ -939,6 +942,33 @@ def plan_design_options(
         objectives=objectives,
         context=context,
         max_options=max_options,
+    )
+
+
+@mcp.tool(com_serialized=False)
+def review_design_requirements(
+    hard_constraints: list[dict[str, Any]],
+    soft_objectives: list[dict[str, Any]] | None = None,
+    preferences: list[dict[str, Any]] | None = None,
+    assumptions: list[str] | None = None,
+    summary: str = "",
+    title: str = "需求契约审查",
+) -> dict[str, Any]:
+    """Review an optimisation contract before running a baseline experiment.
+
+    The tool normalises measurement requirements, separates hard constraints
+    from soft objectives and preferences, and detects obvious contradictory
+    bounds for the same signal.  It never creates a circuit, writes files, or
+    starts a simulation; a clean result only means the declared contract is
+    internally coherent.
+    """
+    return build_requirement_review(
+        hard_constraints,
+        soft_objectives=soft_objectives,
+        preferences=preferences,
+        assumptions=assumptions,
+        summary=summary,
+        title=title,
     )
 
 

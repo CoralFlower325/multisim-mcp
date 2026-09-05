@@ -38,6 +38,11 @@ MIT 代码授权范围，公开仓库默认不应包含这些文件。用户需�
 审批式设计规划、诊断/补丁评估、全局优化、自主纠错、Multisim/ngspice 差分验证与
 可恢复作业。详情见 [`v1.2.0 发布说明`](docs/RELEASE_NOTES_v1.2.0.md)。
 
+开发分支新增只读的 `review_design_requirements` 需求契约审查：在基线实验前区分硬约束、
+软目标、偏好和假设，并拦截同一信号上的明显冲突。接口说明见
+[`需求契约审查`](docs/REQUIREMENT_ENGINEERING.md)。
+该接口属于下一版本开发内容；已发布的 `v1.2.0` 仍保持 78 个工具，开发分支公共面为 79 个工具。
+
 ## 已实现的完整闭环
 
 `run_circuit_experiment` 可以从同一份受限 SPICE 网表完成：

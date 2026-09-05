@@ -15,6 +15,8 @@
 - 1.3 开发：Workbench loopback API 增加有界只读 SSE 作业事件流
   `/api/jobs/{job_id}/events`，支持一次性快照、心跳、终态自动关闭和硬超时；不改变
   MCP 工具、Resource 或持久化作业 schema。
+- 1.3 开发：增加只读 `review_design_requirements` 需求契约审查，在基线实验前区分硬约束、
+  软目标、偏好和假设，并拦截同一信号上的明显冲突。
 
 ### English
 
@@ -30,6 +32,9 @@
   `/api/jobs/{job_id}/events` to the loopback Workbench API, with one-shot snapshots,
   heartbeats, terminal-state close, and hard time limits; MCP tools, Resources, and
   persisted job schemas remain unchanged.
+- 1.3 development: added the read-only `review_design_requirements` contract review,
+  separating hard constraints, soft objectives, preferences, and assumptions and
+  rejecting obvious contradictory bounds before a baseline experiment.
 
 ## [1.2.0] - 2026-09-01
 

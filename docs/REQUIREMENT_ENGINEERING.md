@@ -1,0 +1,88 @@
+# 需求契约审查 / Requirement contract review
+
+`review_design_requirements` 是进入基线实验前的只读门。它把已有电路的目标拆成：
+
+- `hard_constraints`：必须通过的实测要求；
+- `soft_objectives`：在可行解之间排序的目标；
+- `preferences`：库存、成本、复杂度等偏好；
+- `assumptions`：仍需使用者确认的工程假设。
+
+工具会复用实验验收契约校验指标、信号、单位和比较运算，并检测同一测量信号上
+明显互相矛盾的硬约束。它不会读取或修改电路，不会启动仿真，也不会把“契约内部一致”
+解释成“电路物理可行”。
+
+## 示例
+
+```json
+{
+  "hard_constraints": [
+    {
+      "id": "vout-range",
+      "metric": "mean",
+      "signal": "V(out)",
+      "operator": "between",
+      "lower": 4.8,
+      "upper": 5.2,
+      "unit": "V"
+    },
+    {
+      "id": "ripple-limit",
+      "metric": "ripple",
+      "signal": "V(out)",
+      "operator": "at_most",
+      "target": 20,
+      "unit": "mV"
+    }
+  ],
+  "soft_objectives": [
+    {
+      "id": "power",
+      "metric": "power",
+      "signal": "V(out)",
+      "goal": "minimize",
+      "weight": 2,
+      "unit": "W"
+    },
+    {
+      "id": "cost",
+      "metric": "power",
+      "signal": "V(out)",
+      "goal": "target",
+      "target": 0.5,
+      "weight": 1,
+      "unit": "W"
+    }
+  ],
+  "preferences": [
+    {"id": "prefer-stock", "kind": "in_stock", "weight": 1}
+  ],
+  "assumptions": ["输入源为理想直流源"],
+  "summary": "5 V 低纹波输出，优先降低功耗"
+}
+```
+
+返回 `state=ready-for-baseline` 时，只表示可以进入基线实验。若返回
+`state=conflict`，应先处理 `conflicts` 中的要求；系统不会用一个“最接近”的失败候选
+替代硬约束。
+
+## 与优化流程的衔接
+
+```text
+review_design_requirements
+  → 运行基线实验
+  → optimize_design（参数）
+  → global_optimize_design（有限参数+拓扑）
+  → compare_design_variants / autonomous_correct_design
+  → 人工审批并应用补丁
+```
+
+当前版本仍不会自动推导完整的热、EMI、安全或器件额定值，也不会自动放宽需求。
+后续将增加不可行原因、最小放宽建议、容差/温度角落和需求到测量证据的追踪关系。
+
+## English summary
+
+`review_design_requirements` is a read-only pre-flight gate. It separates hard measured
+constraints, soft objectives, preferences, and assumptions, validates the existing
+measurement contract, and detects obvious contradictory bounds for one signal. A clean
+contract is not a proof of physical feasibility; simulation and approval remain separate
+steps.

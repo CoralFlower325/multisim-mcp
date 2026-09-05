@@ -1,0 +1,317 @@
+"""Requirement contracts and pre-flight conflict analysis.
+
+This module deliberately stops before simulation.  It turns a set of measured
+hard constraints and soft objectives into a small, immutable review envelope
+that can be handed to the existing verification and optimisation services.
+The checks are conservative: a clean result means only that the declared
+contract is internally coherent, not that a circuit is physically feasible.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from collections.abc import Mapping, Sequence
+from typing import Any, Final
+
+from .design_verification import METRICS, OPERATORS, validate_measurement_requests
+
+
+REQUIREMENT_CONTRACT_SCHEMA_VERSION: Final = 1
+REQUIREMENT_CONTRACT_KIND: Final = "multisim-mcp-requirement-review"
+MAX_HARD_CONSTRAINTS: Final = 100
+MAX_SOFT_OBJECTIVES: Final = 32
+MAX_PREFERENCES: Final = 32
+MAX_ASSUMPTIONS: Final = 32
+MAX_TEXT_LENGTH: Final = 16_384
+_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_SOFT_GOALS: Final = frozenset({"minimize", "maximize", "target"})
+
+
+def _digest(value: object) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _finite(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _bounded_text(value: object, name: str, *, maximum: int = 1024) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be non-empty text")
+    result = value.strip()
+    if len(result) > maximum or "\x00" in result:
+        raise ValueError(f"{name} is too long or contains NUL")
+    return result
+
+
+def _identity(item: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(item["metric"]),
+        str(item["signal"]),
+        str(item.get("unit") or ""),
+    )
+
+
+def _interval(item: Mapping[str, Any]) -> tuple[float, float]:
+    operator = item["operator"]
+    if operator == "at_least":
+        return float(item["target"]), math.inf
+    if operator == "at_most":
+        return -math.inf, float(item["target"])
+    if operator == "between":
+        return float(item["lower"]), float(item["upper"])
+    target = float(item["target"])
+    tolerances: list[float] = []
+    if "tolerance_abs" in item:
+        tolerances.append(float(item["tolerance_abs"]))
+    if "tolerance_percent" in item:
+        tolerances.append(abs(target) * float(item["tolerance_percent"]) / 100.0)
+    # This mirrors the verification engine: when both are supplied, both are
+    # limits and the stricter one applies.
+    allowance = min(tolerances)
+    return target - allowance, target + allowance
+
+
+def _normalise_preferences(value: object) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("preferences must be an array")
+    if len(value) > MAX_PREFERENCES:
+        raise ValueError(f"preferences must contain at most {MAX_PREFERENCES} items")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"preferences[{index}] must be an object")
+        item = dict(raw)
+        unknown = set(item) - {"id", "kind", "description", "weight", "value"}
+        if unknown:
+            raise ValueError(
+                f"unknown fields for preferences[{index}]: " + ", ".join(sorted(unknown))
+            )
+        identifier = _bounded_text(item.get("id"), f"preferences[{index}].id", maximum=64)
+        if not _ID_RE.fullmatch(identifier):
+            raise ValueError(f"invalid preference id: {identifier!r}")
+        if identifier in seen:
+            raise ValueError(f"duplicate requirement id: {identifier}")
+        seen.add(identifier)
+        kind = _bounded_text(item.get("kind"), f"preferences[{identifier}].kind", maximum=64)
+        description = _bounded_text(
+            item.get("description", kind), f"preferences[{identifier}].description", maximum=512
+        )
+        weight = _finite(item.get("weight", 1.0), f"preferences[{identifier}].weight")
+        if weight < 0:
+            raise ValueError(f"preferences[{identifier}].weight must not be negative")
+        result.append(
+            {
+                "id": identifier,
+                "kind": kind,
+                "description": description,
+                "weight": round(weight, 8),
+                "value": item.get("value"),
+            }
+        )
+    total = sum(item["weight"] for item in result)
+    if result and total <= 0:
+        raise ValueError("preferences must contain a positive weight")
+    if total > 0:
+        for item in result:
+            item["weight"] = round(item["weight"] / total, 8)
+    return result
+
+
+def _normalise_objectives(value: object) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("soft_objectives must be an array")
+    if len(value) > MAX_SOFT_OBJECTIVES:
+        raise ValueError(f"soft_objectives must contain at most {MAX_SOFT_OBJECTIVES} items")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"soft_objectives[{index}] must be an object")
+        item = dict(raw)
+        unknown = set(item) - {
+            "id", "metric", "signal", "reference_signal", "x_signal", "unit",
+            "parameters", "goal", "target", "weight", "description",
+        }
+        if unknown:
+            raise ValueError(
+                f"unknown fields for soft_objectives[{index}]: " + ", ".join(sorted(unknown))
+            )
+        identifier = _bounded_text(item.get("id"), f"soft_objectives[{index}].id", maximum=64)
+        if not _ID_RE.fullmatch(identifier):
+            raise ValueError(f"invalid objective id: {identifier!r}")
+        if identifier in seen:
+            raise ValueError(f"duplicate requirement id: {identifier}")
+        seen.add(identifier)
+        metric = _bounded_text(item.get("metric"), f"soft_objectives[{identifier}].metric", maximum=64).lower()
+        if metric not in METRICS:
+            raise ValueError(f"unsupported metric for objective {identifier}: {metric!r}")
+        signal = _bounded_text(item.get("signal"), f"soft_objectives[{identifier}].signal", maximum=256)
+        goal = _bounded_text(item.get("goal"), f"soft_objectives[{identifier}].goal", maximum=16).lower()
+        if goal not in _SOFT_GOALS:
+            raise ValueError(f"objective {identifier}.goal must be minimize, maximize, or target")
+        if goal == "target" and "target" not in item:
+            raise ValueError(f"objective {identifier} requires target")
+        target = _finite(item["target"], f"soft_objectives.{identifier}.target") if "target" in item else None
+        weight = _finite(item.get("weight", 1.0), f"soft_objectives.{identifier}.weight")
+        if weight < 0:
+            raise ValueError(f"soft_objectives.{identifier}.weight must not be negative")
+        result.append(
+            {
+                "id": identifier,
+                "metric": metric,
+                "signal": signal,
+                "reference_signal": item.get("reference_signal"),
+                "x_signal": item.get("x_signal"),
+                "unit": item.get("unit") or "",
+                "parameters": dict(item.get("parameters") or {}),
+                "goal": goal,
+                "target": target,
+                "weight": round(weight, 8),
+                "description": str(item.get("description") or "").strip(),
+            }
+        )
+    # Reuse the same metric/signal/parameter contract as experiments so an
+    # objective can be handed to the optimisation services without a second
+    # interpretation of its measurement request.
+    validate_measurement_requests(
+        [
+            {
+                key: item[key]
+                for key in ("id", "metric", "signal", "reference_signal", "x_signal", "unit", "parameters")
+                if item.get(key) not in (None, "")
+            }
+            for item in result
+        ]
+    )
+    total = sum(item["weight"] for item in result)
+    if result and total <= 0:
+        raise ValueError("soft_objectives must contain a positive weight")
+    if total > 0:
+        for item in result:
+            item["weight"] = round(item["weight"] / total, 8)
+    return result
+
+
+def review_design_requirements(
+    hard_constraints: list[dict[str, Any]],
+    *,
+    soft_objectives: list[dict[str, Any]] | None = None,
+    preferences: list[dict[str, Any]] | None = None,
+    assumptions: list[str] | None = None,
+    summary: str = "",
+    title: str = "需求契约审查",
+) -> dict[str, Any]:
+    """Normalise and pre-flight a requirement contract without simulation."""
+    if not isinstance(hard_constraints, list) or not hard_constraints:
+        raise ValueError("hard_constraints must contain at least one requirement")
+    if len(hard_constraints) > MAX_HARD_CONSTRAINTS:
+        raise ValueError(f"hard_constraints must contain at most {MAX_HARD_CONSTRAINTS} items")
+    if not isinstance(summary, str) or len(summary) > MAX_TEXT_LENGTH or "\x00" in summary:
+        raise ValueError("summary is too long or contains NUL")
+    if not isinstance(title, str) or not title.strip() or len(title) > 256:
+        raise ValueError("title must be non-empty and at most 256 characters")
+    normalized_hard = validate_measurement_requests(hard_constraints, requirements=True)
+    objectives = _normalise_objectives(soft_objectives)
+    prefs = _normalise_preferences(preferences)
+    if assumptions is None:
+        normalized_assumptions: list[str] = []
+    else:
+        if not isinstance(assumptions, list):
+            raise ValueError("assumptions must be an array")
+        if len(assumptions) > MAX_ASSUMPTIONS:
+            raise ValueError(f"assumptions must contain at most {MAX_ASSUMPTIONS} items")
+        normalized_assumptions = [
+            _bounded_text(item, f"assumptions[{index}]", maximum=1024)
+            for index, item in enumerate(assumptions)
+        ]
+
+    identifiers = {item["id"] for item in normalized_hard}
+    for item in objectives + prefs:
+        if item["id"] in identifiers:
+            raise ValueError(f"duplicate requirement id: {item['id']}")
+        identifiers.add(item["id"])
+
+    conflicts: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for item in normalized_hard:
+        grouped.setdefault(_identity(item), []).append(item)
+    for identity, items in grouped.items():
+        lower = max(_interval(item)[0] for item in items)
+        upper = min(_interval(item)[1] for item in items)
+        if lower > upper:
+            conflicts.append(
+                {
+                    "type": "non_overlapping_hard_constraints",
+                    "ids": [item["id"] for item in items],
+                    "metric": identity[0],
+                    "signal": identity[1],
+                    "unit": identity[2],
+                    "intersection": None,
+                    "message": "同一测量信号的硬约束没有共同可行区间",
+                }
+            )
+
+    warnings: list[dict[str, Any]] = []
+    if not objectives:
+        warnings.append(
+            {
+                "code": "no_soft_objectives",
+                "message": "未声明软目标；优化器只能判断是否满足硬约束，无法选择更优候选。",
+            }
+        )
+    for item in normalized_hard:
+        if item["metric"] in {"frequency", "thd", "gain", "cutoff_frequency", "bandwidth"} and not item.get("unit"):
+            warnings.append(
+                {
+                    "code": "missing_unit",
+                    "id": item["id"],
+                    "message": "建议为频率、增益或带宽类指标明确单位，避免跨工具解释不一致。",
+                }
+            )
+    state = "conflict" if conflicts else ("ready-for-baseline" if normalized_hard else "needs-input")
+    envelope: dict[str, Any] = {
+        "schema_version": REQUIREMENT_CONTRACT_SCHEMA_VERSION,
+        "kind": REQUIREMENT_CONTRACT_KIND,
+        "title": title.strip(),
+        "summary": summary.strip(),
+        "state": state,
+        "hard_constraints": normalized_hard,
+        "soft_objectives": objectives,
+        "preferences": prefs,
+        "assumptions": normalized_assumptions,
+        "conflicts": conflicts,
+        "warnings": warnings,
+        "simulation_started": False,
+        "artifacts_generated": [],
+        "next_step": "resolve_conflicts_before_baseline" if conflicts else "run_baseline_experiment",
+    }
+    envelope["contract_digest"] = _digest(envelope)
+    return envelope
+
+
+__all__ = [
+    "MAX_ASSUMPTIONS",
+    "MAX_HARD_CONSTRAINTS",
+    "MAX_PREFERENCES",
+    "MAX_SOFT_OBJECTIVES",
+    "REQUIREMENT_CONTRACT_KIND",
+    "REQUIREMENT_CONTRACT_SCHEMA_VERSION",
+    "review_design_requirements",
+]
