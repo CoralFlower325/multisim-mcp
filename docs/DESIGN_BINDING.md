@@ -3,6 +3,8 @@
 `bind_requirement_review_to_design` 是现有电路进入优化前的只读检查层。它接收一个
 `CircuitDesign` 快照和已经通过 `review_design_requirements` 的契约，检查需求中的信号
 是否能在快照的节点或元件中找到，并列出可进入有界参数优化的 R/C/L 元件。
+若同时传入 `snapshot_evidence`，工具会强制校验快照中的元件交叉校验和边界审查均已通过；
+这适合阻止调用者绕过 COM 导入审查直接提交裸设计对象。
 
 ## 绑定规则
 
