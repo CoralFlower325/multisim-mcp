@@ -26,6 +26,8 @@
 - `apply_native_sweep_patch_to_copy` 只接受带摘要的草案和显式审批，写入新的 `.ms14` 副本后
   重新打开源工程，原文件不会被覆盖；审批还必须确认源工程已保存，因为重新打开不会保留
   Multisim 界面中的未保存改动。
+- `compare_native_sweep_baseline` 从候选网格中识别原始参数组并计算目标改善量；
+  `export_native_sweep_report` 输出中英双语 Markdown、结构化 JSON 和完整性清单。
 
 ## 返回状态
 
@@ -98,6 +100,9 @@ approval workflow before any persisted design is changed; direct `.ms14` write-b
 `apply_native_sweep_patch_to_copy` is the guarded persistence step: it requires the exact draft
 digest, explicit approval, and a saved-source acknowledgement, writes a new `.ms14` copy, and
 reopens the original source without overwriting it. Unsaved Multisim UI changes are not preserved.
+`compare_native_sweep_baseline` identifies the original-value record and calculates objective
+improvement. `export_native_sweep_report` writes a bilingual Markdown report, structured JSON,
+and a SHA-256 integrity manifest.
 For a readable local `.ms14`, the tool decodes a temporary copy and maps internal identifiers
 through `CIRToInfoMapItem`. Only component identity, port inventory, and model/template hashes
 are retained; licensed model bodies are never embedded in the snapshot.

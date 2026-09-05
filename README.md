@@ -43,12 +43,14 @@ MIT 代码授权范围，公开仓库默认不应包含这些文件。用户需�
 [`需求契约审查`](docs/REQUIREMENT_ENGINEERING.md)。
 开发分支还新增 `bind_requirement_review_to_design`，把契约绑定到已有设计快照并报告
 缺失信号与可优化参数，以及 `snapshot_open_circuit` 的 COM 导入快照入口；已发布的
-`v1.2.0` 仍保持 78 个工具，开发分支公共面为 85 个工具。
+`v1.2.0` 仍保持 78 个工具，开发分支公共面为 87 个工具。
 绑定结果中的 `native_optimization_readiness` 带有完整性摘要；在用户明确批准、通过运行时门禁后，
 `run_native_parameter_sweep` 才会对当前打开工程执行有界 R/C/L 参数扫描，并在每次运行后恢复原值。
 扫描完成后可用 `rank_native_sweep_results` 按均值、峰峰值、RMS 或目标值距离自动排序候选方案。
 `prepare_native_sweep_patch` 会把最佳候选转换为现有审批体系可处理的标准可逆 `DesignPatch`。
 通过显式审批后，`apply_native_sweep_patch_to_copy` 只写入新的 `.ms14` 副本，并重新打开源工程。
+`compare_native_sweep_baseline` 会自动识别原始参数组并计算改进量；
+`export_native_sweep_report` 导出中文为主的 Markdown、JSON 和 SHA-256 清单。
 
 ## 已实现的完整闭环
 
