@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_date": "2026-09-05",
+  "verified_date": "2026-09-08",
   "status": "developer-preview",
   "upstream": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
@@ -32,9 +32,9 @@
     "bundle_path": "integrations/deepseek-harness",
     "tool_profiles": {
       "core": 29,
-      "experiment": 64,
+      "experiment": 81,
       "optimization": 69,
-      "full": 87
+      "full": 104
     },
     "skills": [
       "multisim-create-experiment",

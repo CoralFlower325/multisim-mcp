@@ -101,9 +101,48 @@ MCP tools, Resources, and persisted job records remain unchanged. A future MCP
 Tasks adapter can reuse the same state names and event payload without changing
 the storage schema.
 
+## 自然语言工程任务 / Natural engineering tasks
+
+Agent 应先调用 `plan_*` 查看结构化合同，再调用对应的 RC、RLC 或 OPAMP `run_*` 工具。
+需要后台执行时调用 `submit_natural_engineering_job`，提交后使用
+`get_experiment_job` 或 `multisim://jobs/{job_id}` 查询状态。终态结果包含
+`topology_acceptance`、`measurement_acceptance`、`artifacts` 和 `error`。
+
+`unverified`、`target-not-met` 和 `failed` 都必须展示为未通过，不能仅凭生成了 `.ms14`
+就宣称电路正确。
+
+## 多板规划 / Multi-board planning
+
+工程计划可以提供 `boards` 和 `components`，返回候选分板、跨板网络、连接器引脚和成本评分。
+该结果是拓扑规划，尚未自动生成多个独立 `.ms14` 工程；每块板仍需分别通过原生网表和仿真验收。
+
+## 模型工程后端入口 / Model engineering handoff
+
+未来独立软件可调用以下 loopback 后端入口；两者复用 MCP/CLI 的同一审计服务：
+
+```text
+POST /api/model-engineering/plan
+POST /api/model-engineering/run
+```
+
+请求至少包含 `text`；执行请求还必须提供新的 `output_dir`，并显式设置 `execute: true`
+才会写入工程、启动原生仿真或导出报告。`execute: false` 只返回模型提案和一致性结果。
+该入口当前继承自然语言 RC 合同范围，不能宣称支持任意电路生成。
+
 ## 兼容策略 / Compatibility
 
 - `api_version` 只有在字段语义发生不兼容变化时才递增。
 - 新字段可向后添加；客户端必须忽略未知字段。
 - `schema_version` 针对单个对象的序列化结构；不能用异常 `type` 推断错误语义。
 - Tool Profile 会影响可发现工具数量，但 `runtime_status` 与本页契约始终可用。
+
+## 2N3904 共射原生入口
+
+`plan_natural_common_emitter(text)` 返回候选方案和估算，不能代替实际验收。
+`run_natural_common_emitter(text, output_dir, execute=false)` 默认仅预览；
+`execute=true` 要求新的输出目录和含 VDC、VPULSE 的用户本地元件包。
+工具属于 experiment/full profile。成功返回原生 OP/AC/TRAN 采样结果、模型和引脚
+核验、实际源属性核查、工程和报告路径。`delivery_status=requires-visual-review`
+表示仍应查看最终电路图；不等于任意电路已通过工程认证。
+
+复现实例和限制见 [共射原生验收记录](COMMON_EMITTER_NATIVE_ACCEPTANCE.md)。

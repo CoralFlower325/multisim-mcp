@@ -18,12 +18,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from multisim_mcp.layout_validation import validate_schematic_geometry
+from multisim_mcp.orthogonal_routing import route_pins, junction_point, pin_escape
+
 from multisim_mcp.component_adapters import expand_component_adapters
+from multisim_mcp.native_xml import parse_native_xml, write_native_xml
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 TEMPLATE_PACK_ENV = "MULTISIM_MCP_TEMPLATE_DIR"
 TEMPLATE_ONLY_ENV = "MULTISIM_MCP_TEMPLATE_ONLY"
+NATIVE_OPAMP_MODELS = {"LM324AJ": "LM158_4"}
 
 ID_ATTRS = frozenset(
     {
@@ -331,6 +336,13 @@ COMPONENT_DEFINITIONS: dict[str, ComponentDefinition] = {
             "opamp5_port3.xml",
         ),
         432, 657, 180,
+    ),
+    # Local-only LM324AJ section A: IN+, IN-, VS+, VS-, OUT. A separate kind
+    # prevents a real vendor device from inheriting ideal OPAMP5 semantics.
+    "LM324AJ": ComponentDefinition(
+        "LM324AJ", "lm324aj_element.xml", "sym_lm324aj.xml",
+        ("lm324aj_port1.xml", "lm324aj_port2.xml", "lm324aj_port4.xml",
+         "lm324aj_port5.xml", "lm324aj_port3.xml"), 432, 657, 180,
     ),
     # Verified native LM555CN carrier. The files are intentionally supplied
     # by the user-local component pack, not bundled with this open-source
@@ -875,7 +887,7 @@ def _load_template(name: str) -> ET.Element:
     for root in template_search_paths():
         path = root / name
         if path.is_file():
-            return ET.parse(str(path)).getroot()
+            return parse_native_xml(path).getroot()
     searched = ", ".join(str(path / name) for path in template_search_paths())
     raise FileNotFoundError(
         "Missing local schematic template. Generate a component pack with "
@@ -1288,12 +1300,18 @@ def parse_netlist(text: str) -> ParsedNetlist:
                         parameters=instance_parameters,
                     )
                 )
+            elif len(nodes) == 5 and model.upper() in NATIVE_OPAMP_MODELS:
+                parsed.components.append(ComponentSpec(
+                    kind=model.upper(), refdes=refdes[1:] if refdes.upper().startswith("XU") else refdes,
+                    nodes=nodes, model=model, parameters=instance_parameters,
+                ))
             elif len(nodes) == 5 and model.upper() in {
                 "OPAMP5",
                 "IDEALOPAMP",
                 "LM741",
                 "LM358",
                 "LM258",
+                "LM324M",
             }:
                 parsed.components.append(
                     ComponentSpec(
@@ -1724,6 +1742,12 @@ def _placeholder_for(item: ET.Element) -> ET.Element:
     return ET.Element("Item", {"ID": item.get("ID"), "Class": item.get("Class")})
 
 
+def _transform_point(element: ET.Element, x: float, y: float, *, translation: bool = True) -> tuple[float, float]:
+    value = lambda key, default: float(element.get('Transformer-' + key, default))
+    return (x * value('M00', '1') + y * value('M10', '0') + (value('M20', '0') if translation else 0),
+            x * value('M01', '0') + y * value('M11', '1') + (value('M21', '0') if translation else 0))
+
+
 def _symbol_pin_info(symbol_item: ET.Element) -> dict[str, dict[str, Any]]:
     info: dict[str, dict[str, Any]] = {}
     for pin_item in symbol_item.findall(
@@ -1737,9 +1761,30 @@ def _symbol_pin_info(symbol_item: ET.Element) -> dict[str, dict[str, Any]]:
             "./CIITPinSymbolComp/Objects/Item[@Class='CIITPinConnectorComp']"
         )
         connector = connector_item.find("./CIITPinConnectorComp")
+        px, py = _transform_point(connector, float(connector.get('ptCenterX')), float(connector.get('ptCenterY')))
+        px, py = _transform_point(pin, px, py)
+        px, py = _transform_point(symbol_item.find('./CIITSymbolComp'), px, py, translation=False)
+        # Remove tiny float rotation noise from vendor templates, not real offsets.
+        px = round(px / 9) * 9 if abs(px - round(px / 9) * 9) < .001 else px
+        py = round(py / 9) * 9 if abs(py - round(py / 9) * 9) < .001 else py
+        direction = None
+        for lead in pin.findall('./Objects/Item/CODLineComp'):
+            ends = []
+            for number in (0, 1):
+                lx, ly = _transform_point(lead, float(lead.get(f'pt{number}X')), float(lead.get(f'pt{number}Y')))
+                lx, ly = _transform_point(pin, lx, ly)
+                ends.append(_transform_point(symbol_item.find('./CIITSymbolComp'), lx, ly, translation=False))
+            for anchor, inside in (ends, list(reversed(ends))):
+                if abs(anchor[0]-px) < .01 and abs(anchor[1]-py) < .01:
+                    vx, vy = px-inside[0], py-inside[1]
+                    if abs(vx) > .01 and abs(vy) < .01:
+                        direction = (1 if vx > 0 else -1, 0)
+                    elif abs(vy) > .01 and abs(vx) < .01:
+                        direction = (0, 1 if vy > 0 else -1)
         info[port_id] = {
-            "local_x": float(connector.get("ptCenterX")),
-            "local_y": float(connector.get("ptCenterY")),
+            "local_x": px,
+            "local_y": py,
+            "direction": direction,
             "connector_id": connector_item.get("ID"),
         }
     return info
@@ -1920,6 +1965,20 @@ def _link_symbol_connector(
         return
 
 
+def voltage_source_stem(spec: ComponentSpec) -> str:
+    """Prefer waveform-specific native carriers when the local pack has them."""
+    pulse = bool(re.search(r"(?i)\bPULSE\s*\(", spec.model or ""))
+    dc_only = spec.value is not None or bool(re.fullmatch(r"(?i)\s*DC\s+\S+\s*", spec.model or ""))
+    stem = "vpulse" if pulse else "vdc" if dc_only else "v"
+    if any((path / (stem + "_element.xml")).is_file() for path in template_search_paths()):
+        return stem
+    return "v"
+
+
+def voltage_pin_order(spec: ComponentSpec) -> list[int]:
+    return [1, 2] if voltage_source_stem(spec) in {"vdc", "vpulse"} else [2, 1]
+
+
 def _set_component_value(
     element_item: ET.Element,
     kind: str,
@@ -1933,7 +1992,9 @@ def _set_component_value(
         doubles = param_list.findall("./doubles/Item")
         parameter_items = param_list.findall("./parameters/Item")
         if len(doubles) > 1 and len(parameter_items) > 1:
-            doubles[1].set("Value", f"{numeric_value:g}.")
+            # A trailing decimal point is valid only for integer notation.
+            # Appending it to 0.1 or 1e-07 corrupts the native numeric value.
+            doubles[1].set("Value", format(numeric_value, ".17g"))
             parameter_items[1].set("Value", _asc(display_value))
     items = comp.findall("./Attributes/Item")
     if kind in {"R", "C", "L"}:
@@ -2005,7 +2066,7 @@ def _set_symbol_labels(
                 value_item.set("Output", f"&ASC{display_value}V ")
             elif kind == "I":
                 value_item.set("Output", f"&ASC{display_value}A ")
-            elif kind in {"E", "F", "G", "H", "BV", "BI", "T", "TIMER8", "DFF8"} or kind.startswith("XSUB"):
+            elif kind in {"E", "F", "G", "H", "BV", "BI", "T", "TIMER8", "DFF8"} or kind.startswith("XSUB") or kind in NATIVE_OPAMP_MODELS:
                 value_item.set("Output", _asc(display_value))
             elif kind.startswith("D"):
                 value_item.set("Output", _asc(display_value))
@@ -2018,10 +2079,20 @@ def _configure_component_semantics(
     spec: ComponentSpec,
 ) -> None:
     """Apply SPICE behavior which is not represented by a scalar value field."""
+    if spec.kind in NATIVE_OPAMP_MODELS:
+        values = [item.get("Value", "").removeprefix("&ASC") for item in element_item.iter("Item")]
+        if spec.kind not in values or not any(
+            re.search(r"(?im)^\s*\.subckt\s+" + re.escape(NATIVE_OPAMP_MODELS[spec.kind]) + r"\s", value) and
+            re.search(r"(?im)^\s*\.ends\b", value) for value in values
+        ):
+            raise ValueError(f"{spec.kind} requires an intact local multiline model; re-extract the licensed template")
+        if spec.parameters:
+            raise ValueError(f"{spec.kind} instance parameters are not supported")
+        return
     if spec.kind not in {
-        "V", "I", "BV", "BI", "T", "XSUB2", "XSUB3", "XSUB4", "XSUB5", "XSUBN",
+        "R", "V", "I", "BV", "BI", "T", "XSUB2", "XSUB3", "XSUB4", "XSUB5", "XSUBN",
         "D", "QNPN", "QPNP", "MNMOS", "MPMOS", "S", "JN", "JP", "ZN", "ZP", "W", "K", "O", "U",
-        "DNAND5", "DNOR5", "DXOR5", "DXNOR5", "TIMER8", "DFF8",
+        "DNAND5", "DNOR5", "DXOR5", "DXNOR5", "TIMER8", "DFF8", "OPAMP5",
     }:
         return
     if spec.kind in {"DNAND5", "DNOR5", "DXOR5", "DXNOR5"}:
@@ -2052,16 +2123,92 @@ def _configure_component_semantics(
                 if item.get("Value", "").removeprefix("&ASC") == old_model:
                     item.set("Value", _asc(model_name))
         return
+    if spec.kind == "R":
+        # The supported R syntax describes an ideal resistor. The extracted
+        # vendor carrier's multiline temperature model is not a safe default:
+        # flattened XML attributes can omit the resistor from native analysis.
+        template = element_item.find("./CiComponent//CiaSpiceTmpltExprt")
+        if template is None:
+            raise ValueError("Native resistor carrier has no SPICE template")
+        template.set("String", _asc("r%p %t1 %t2 #1"))
+        return
+    if spec.kind == "OPAMP5":
+        if (spec.model or "OPAMP5").upper() not in {"OPAMP5", "IDEALOPAMP"}:
+            raise ValueError(f"{spec.refdes}: native model {spec.model!r} is not verified; request OPAMP5 explicitly for an ideal model")
+        # The vendor 5T_Virtual carrier is not stable when emitted through
+        # the generated XML (it enumerates correctly but produces zero gain).
+        # Use a deterministic ideal VCVS for the bounded OPAMP5 contract.
+        template = element_item.find("./CiComponent//CiaSpiceTmpltExprt")
+        if template is None:
+            raise ValueError("Native OPAMP5 carrier has no SPICE template")
+        template.set("String", _asc("e%p %tOUT 0 %tIN+ %tIN- 1e5"))
+        return
     if spec.kind in {"V", "I"}:
-        if not spec.model:
+        if not spec.model and spec.kind != "V":
             return
         template = element_item.find("./CiComponent//CiaSpiceTmpltExprt")
         if template is None:
             raise ValueError(f"Native carrier for {spec.kind} has no SPICE template")
-        terminals = "%t1 %t2" if spec.kind == "V" else "%t2 %t1"
+        carrier_values = element_item.findall("./CiComponent/Attributes/Item/CiaCollString/strings/Item")
+        carrier_identity = carrier_values[1].get("Value", "").removeprefix("&ASC") if len(carrier_values) > 1 else None
+        if spec.kind == "V" and voltage_source_stem(spec) in {"vdc", "vpulse"} and carrier_identity in {"DC_POWER", "PULSE_VOLTAGE"}:
+            param_list = element_item.find("./CiComponent//CiaParamList")
+            doubles, params = param_list.findall("./doubles/Item"), param_list.findall("./parameters/Item")
+            def set_parameter(index: int, token: str) -> None:
+                if index >= len(doubles) or index >= len(params):
+                    raise ValueError("native source carrier has an incomplete parameter table")
+                value, display = parse_spice_value(token)
+                doubles[index].set("Value", format(value, ".17g"))
+                params[index].set("Value", _asc(display))
+            expression = spec.model or f"DC {spec.value}"
+            if voltage_source_stem(spec) == "vpulse":
+                pulse = re.search(r"(?i)PULSE\s*\(([^()]*)\)", expression)
+                tokens = pulse[1].split()
+                if len(tokens) != 7:
+                    raise ValueError("native pulse carrier requires seven pulse parameters")
+                for index, token in zip(range(1, 14, 2), tokens):
+                    set_parameter(index, token)
+                ac = re.search(r"(?i)\bAC\s+(\S+)(?:\s+([+-]?(?:\d|\.)\S*))?", expression)
+                set_parameter(15, ac[1] if ac else "0")
+                set_parameter(17, ac[2] if ac and ac[2] else "0")
+            else:
+                set_parameter(1, spec.value or expression.split()[1])
+                set_parameter(3, "0")
+                set_parameter(5, "0")
+            template.set("String", _asc(f"v%p %t1 %t2 {expression}"))
+            return
+        # In the legacy carrier port 2 is assigned the positive terminal and
+        # the first SPICE node; port 1 is negative. Verified by native OP.
+        terminals = "%t2 %t1"
+        # A scalar source value comes from the compact ``V1 ... DC 10``
+        # syntax.  Preserve it as a DC-only source; falling back to the
+        # carrier's AC waveform makes the editable schematic contradict the
+        # validated netlist (for example, displaying 5 kHz on a DC divider).
+        expression = spec.model or ("dc #1" if spec.value is not None else "dc #1 ac #3 #5")
+        if spec.model:
+            # Synchronize the editable carrier properties with explicit DC/AC
+            # clauses; otherwise a 1 V waveform still displays the vendor's 15 V.
+            param_list = element_item.find("./CiComponent//CiaParamList")
+            for clause, parameter_index in (("dc", 1), ("ac", 3)):
+                match = re.search(rf"\b{clause}\s+([^\s()]+)", expression, re.IGNORECASE)
+                if match and param_list is not None:
+                    value, display = parse_spice_value(match.group(1))
+                    param_list.findall("./doubles/Item")[parameter_index].set("Value", format(value, ".17g"))
+                    param_list.findall("./parameters/Item")[parameter_index].set("Value", _asc(display))
+                    expression = expression[:match.start(1)] + f"#{parameter_index}" + expression[match.end(1):]
+        elif spec.value is not None:
+            param_list = element_item.find("./CiComponent//CiaParamList")
+            if param_list is not None:
+                doubles = param_list.findall("./doubles/Item")
+                params = param_list.findall("./parameters/Item")
+                if len(doubles) > 1:
+                    value, display = parse_spice_value(spec.value)
+                    doubles[1].set("Value", format(value, ".17g"))
+                    if len(params) > 1:
+                        params[1].set("Value", _asc(display))
         template.set(
             "String",
-            _asc(f"{spec.kind.lower()}%p {terminals} {spec.model}"),
+            _asc(f"{spec.kind.lower()}%p {terminals} {expression}"),
         )
         return
     if spec.kind == "K":
@@ -2228,13 +2375,62 @@ def _make_external_pin(
     return pin_item.get("ID")
 
 
-def _orthogonal_path(p1: tuple[float, float], p2: tuple[float, float]) -> list[tuple[float, float]]:
-    if p1[0] == p2[0] or p1[1] == p2[1]:
-        return [p1, p2]
-    # Bend in the free channel between components instead of running the first
-    # segment alongside/through the source symbol's bounding box.
-    mid_x = (p1[0] + p2[0]) / 2.0
-    return [p1, (mid_x, p1[1]), (mid_x, p2[1]), p2]
+def _simple_analog_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
+    """A planar layout for a source, series resistor and shunt R/C.
+
+    Match connectivity exactly; unsupported circuits keep the general layout.
+    """
+    parts = [s for s in specs if s.kind != "GND"]
+    if len(parts) != 3:
+        return None
+    sources = [s for s in parts if s.kind == "V" and len(s.nodes) == 2 and s.nodes[1] == "0"]
+    if len(sources) != 1:
+        return None
+    source = sources[0]
+    series = [s for s in parts if s.kind == "R" and s.nodes[0] == source.nodes[0] and s.nodes[1] not in {"0", source.nodes[0]}]
+    if len(series) != 1:
+        return None
+    resistor = series[0]
+    shunt = [s for s in parts if s is not resistor and s.kind in {"R", "C"} and s.nodes == [resistor.nodes[1], "0"]]
+    if len(shunt) != 1:
+        return None
+    return {"source": source.refdes, "series": resistor.refdes, "shunt": shunt[0].refdes,
+            "shunt_kind": shunt[0].kind, "input": source.nodes[0], "output": resistor.nodes[1],
+            "positions": {source.refdes: (36, 117), resistor.refdes: (243, 117),
+                          shunt[0].refdes: (450, 252), "0": (45, 414)}}
+
+
+def _opamp_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
+    """Planar placement for the bounded five-pin non-inverting OPAMP5 stage."""
+    kinds = {item.refdes: item.kind for item in specs}
+    opamp_ref = "U1" if kinds.get("U1") == "OPAMP5" else "XU1"
+    required = {opamp_ref: "OPAMP5", "V1": "V", "VCC": "V", "VSS": "V", "R1": "R", "RF": "R", "RG": "R"}
+    if any(kinds.get(ref) != kind for ref, kind in required.items()):
+        return None
+    positions = {"V1": (90, 270), "VCC": (90, 90), "VSS": (900, 900),
+                 opamp_ref: (360, 270), "RF": (630, 270), "R1": (90, 630),
+                 "RG": (360, 450), "0": (18, 1080)}
+    if any(item.refdes not in positions for item in specs):
+        return None
+    return {"positions": positions}
+
+
+def _common_emitter_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
+    expected = {"VCC": ("V", ["vcc", "0"]), "VIN": ("V", ["in", "0"]),
+                "RBIAS1": ("R", ["vcc", "base"]), "RBIAS2": ("R", ["base", "0"]),
+                "RC": ("R", ["vcc", "collector"]), "RE": ("R", ["emitter", "0"]),
+                "Q1": ("QNPN", ["collector", "base", "emitter"]),
+                "CIN": ("C", ["in", "base"]), "COUT": ("C", ["collector", "out"]),
+                "RLOAD": ("R", ["out", "0"])}
+    parts = {s.refdes: (s.kind, s.nodes) for s in specs if s.kind != "GND"}
+    if parts != expected:
+        return None
+    # Source at left, bias column, transistor column, output/load at right.
+    return {"positions": {"VCC": (27, 63), "VIN": (27, 270), "CIN": (225, 243),
+                          "RBIAS1": (369, 108), "RBIAS2": (369, 378),
+                          "RC": (567, 108), "RE": (567, 378), "Q1": (540, 243),
+                          "COUT": (747, 207), "RLOAD": (927, 378), "0": (927, 540)},
+            "vertical": {"RBIAS1", "RBIAS2", "RC", "RE", "RLOAD"}}
 
 
 def _component_placement_order(specs: list[ComponentSpec]) -> list[int]:
@@ -2347,6 +2543,7 @@ def _refdes_info(
     refdes: str,
     circuit_name: str,
     file_path: str,
+    output_number: int = -1,
 ) -> ET.Element:
     """Build the CIRToInfoMap entry Multisim uses for probe RefDes records."""
     refdes_str = f"&ASC!0!0!0{refdes}!0{file_path}!01!0{circuit_name}!0"
@@ -2360,7 +2557,7 @@ def _refdes_info(
         {
             "Class": "CIITHierRefDesInfo",
             "IRPrefix": _asc("OutProbe"),
-            "IRNumber": "-1",
+            "IRNumber": str(output_number),
             "Locked": "0",
             "IRSection": "",
             "IRSectionID": "0",
@@ -2438,8 +2635,23 @@ def _set_probe_comphandle(item: ET.Element, symbol_id: str) -> None:
 
 def _pick_probe_point(
     wire_paths: list[list[tuple[float, float]]],
+    pin_points: list[tuple[float, float]] | None = None,
 ) -> tuple[float, float] | None:
-    """Pick a point on an existing wire for a probe symbol center."""
+    """Pick a native-stable terminal point on an existing wire for a probe."""
+    if pin_points:
+        terminals = {point for path in wire_paths for point in (path[0], path[-1])}
+        candidates = [point for point in pin_points if point in terminals]
+        if candidates:
+            return max(candidates, key=lambda point: (point[0], -point[1]))
+    # Multisim 14.x can omit a voltage probe placed in the middle of a wire
+    # when that wire terminates at an inductor/capacitor pin.  A terminal point
+    # is electrically equivalent and survives native output enumeration.
+    if wire_paths:
+        # Prefer the shortest direct segment and its rightmost terminal. This
+        # avoids placing a probe on a junction branch in series RLC layouts.
+        direct = min((path for path in wire_paths if path), key=lambda path: (len(path), -max(point[0] for point in path)), default=None)
+        if direct:
+            return max(direct, key=lambda point: point[0])
     for points in wire_paths:
         for start, end in zip(points, points[1:]):
             mid_x = (start[0] + end[0]) / 2.0
@@ -2470,6 +2682,7 @@ def _add_probes(
     net_wires: dict[str, list[list[tuple[float, float]]]],
     probe_nets: list[str],
     output_ms14: str,
+    net_pin_points: dict[str, list[tuple[float, float]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Insert voltage probes on named nets and register them with Multisim."""
     probes: list[dict[str, Any]] = []
@@ -2516,7 +2729,7 @@ def _add_probes(
 
     for index, net in enumerate(probe_nets, start=1):
         refdes = f"PR{index}"
-        point = _pick_probe_point(net_wires.get(net, []))
+        point = _pick_probe_point(net_wires.get(net, []), (net_pin_points or {}).get(net))
         if point is None:
             continue
 
@@ -2534,6 +2747,11 @@ def _add_probes(
         symbol.set("CiProbeExtComp", element_item.get("CiID"))
         symbol.set("Transformer-M20", f"{point[0]:g}")
         symbol.set("Transformer-M21", f"{point[1]:g}")
+        symbol.set("UniqueID", str(next_probe_id))
+        symbol.set("ShowInfo", "0")
+        package_id = _asc(f"X_MCP_{symbol_item.get('ID')}")
+        symbol.set("FileDataPackageID", package_id)
+        instrument_item.set("CompLongName", package_id)
 
         objects.append(symbol_item)
         elements.append(element_item)
@@ -2545,8 +2763,8 @@ def _add_probes(
         _set_probe_comphandle(symbol_item, symbol_item.get("ID"))
         _set_probe_comphandle(instrument_item, symbol_item.get("ID"))
 
-        cir_to_info.append(_refdes_info(refdes, circuit_name, output_ms14))
-        prefix_map.append(_refdes_prefix_usage())
+        output_number = -1 if index == 1 else index - 1
+        cir_to_info.append(_refdes_info(refdes, circuit_name, output_ms14, output_number))
         trigger_set.append(_probe_trigger(tree_instance, str(next_probe_id)))
         next_probe_id += 1
 
@@ -2558,10 +2776,25 @@ def _add_probes(
                 "y": point[1],
                 "element_id": element_item.get("CiID"),
                 "symbol_id": symbol_item.get("ID"),
+                "voltage_output": f"V(OutProbe{index - 1 if index > 1 else ''})",
+                "current_output": f"I(OutProbe{index - 1 if index > 1 else ''})",
+                "attachment": {
+                    "wire_segments_available": len(net_wires.get(net, [])),
+                    "point_selected_on_wire": True,
+                    "native_output_requires_enumeration": True,
+                },
             }
         )
 
     total_triggers.set("NextProbeID", str(next_probe_id))
+    if probes:
+        usage = _refdes_prefix_usage()
+        usage.set("NextNumber", str(len(probes)))
+        numbers = usage.find("./RefDesPrefixUsage")
+        _clear(numbers)
+        for number in range(len(probes)):
+            ET.SubElement(numbers, "NumbersUsedVTwo", {"NumberUsed": str(number)})
+        prefix_map.append(usage)
     return probes
 
 
@@ -2677,7 +2910,7 @@ def build_schematic(
                     f"{spec.refdes} references missing inductors: {', '.join(missing)}"
                 )
     if template_path is not None:
-        root = ET.parse(str(Path(template_path))).getroot()
+        root = parse_native_xml(template_path).getroot()
     else:
         root = _load_template("minimal.ms14.xml")
     # Do not propagate the workstation identity embedded by Multisim into
@@ -2693,6 +2926,7 @@ def build_schematic(
     circuit = circuit_item.find("./CiCircuit")
     models = next(root.iter("Models"), None)
     model_refs: set[str] = set()
+    native_models: dict[str, ET.Element] = {}
 
     _clear(objects)
     _clear(refs)
@@ -2713,17 +2947,22 @@ def build_schematic(
     grid_columns = min(6, max(2, math.ceil(math.sqrt(max(1, len(specs))))))
     grid_origin_x = 36
     grid_origin_y = 117
-    grid_step_x = 207
-    grid_step_y = 153
+    grid_step_x = 270
+    grid_step_y = 216
     placement_rank = {
         component_index: rank
         for rank, component_index in enumerate(_component_placement_order(specs))
     }
+    simple_profile = _simple_analog_profile(specs)
+    opamp_profile = _opamp_profile(specs)
+    ce_profile = _common_emitter_profile(specs)
     node_records: dict[str, dict[str, Any]] = {}
     connections: dict[str, list[dict[str, Any]]] = {}
     component_items: list[ET.Element] = []
     port_items: list[ET.Element] = []
     net_wires: dict[str, list[list[tuple[float, float]]]] = {}
+    net_pin_points: dict[str, list[tuple[float, float]]] = {}
+    placements: list[dict[str, Any]] = []
 
     def get_node(name: str) -> dict[str, Any]:
         if name not in node_records:
@@ -2748,15 +2987,32 @@ def build_schematic(
             element_item, symbol_item = _make_coupling_templates()
             component_port_templates = []
         else:
-            element_item = _deepcopy(_load_template(definition.element_template))
-            symbol_item = _deepcopy(_load_template(definition.symbol_template))
+            stem = voltage_source_stem(spec) if spec.kind == "V" else None
+            element_item = _deepcopy(_load_template(stem + "_element.xml" if stem else definition.element_template))
+            symbol_item = _deepcopy(_load_template("sym_" + stem + ".xml" if stem else definition.symbol_template))
             component_port_templates = [
                 _load_template(name) for name in definition.port_templates
-            ]
+            ] if stem is None else [_load_template(stem + f"_port{i}.xml") for i in (1, 2)]
+        if spec.kind == "V":
+            # Old packs stored the positive port in v_port1.xml; freshly
+            # extracted packs sort by native pin number. Filenames are not
+            # electrical semantics: the DC_POWER carrier uses 2=+, 1=-.
+            by_name = {item.find("CiPort").get("LocalName", "").removeprefix("&ASC"): item for item in component_port_templates}
+            if set(by_name) != {"1", "2"}:
+                raise ValueError("DC_POWER carrier must expose native pins 2 (+) and 1 (-)")
+            component_port_templates = [by_name[str(pin)] for pin in voltage_pin_order(spec)]
         _remap_subtree(element_item, ids)
         _remap_subtree(symbol_item, ids)
         comp = element_item.find("./CiComponent")
         sym = symbol_item.find("./CIITSymbolComp")
+        if spec.kind in NATIVE_OPAMP_MODELS or (spec.kind == "QNPN" and not spec.model_definition):
+            if spec.kind not in native_models:
+                model_item = _deepcopy(_load_template(spec.kind.lower() + "_model.xml"))
+                _remap_subtree(model_item, ids)
+                model_item.find("CiModel").set("Scope", circuit_item.get("CiID"))
+                native_models[spec.kind] = model_item
+                elements.append(model_item)
+            comp.set("Model", native_models[spec.kind].get("CiID"))
         if comp is not None and comp.get("Model"):
             # Native components extracted from a licensed Multisim database
             # may point at a CiModel object outside the component subtree.
@@ -2766,8 +3022,15 @@ def build_schematic(
         rank = placement_rank[component_index]
         x = grid_origin_x + (rank % grid_columns) * grid_step_x
         y = grid_origin_y + (rank // grid_columns) * grid_step_y
+        if simple_profile:
+            x, y = simple_profile['positions'][spec.refdes]
+        elif opamp_profile:
+            x, y = opamp_profile['positions'][spec.refdes]
+        elif ce_profile:
+            x, y = ce_profile['positions'][spec.refdes]
         max_component_x = max(max_component_x, x + 126)
         max_component_y = max(max_component_y, y + 108)
+        placements.append({"refdes": spec.refdes, "kind": spec.kind, "x": x, "y": y})
         sym.set("Transformer-M20", f"{x:g}")
         sym.set("Transformer-M21", f"{y:g}")
         comp.set("LocalName", _asc(spec.refdes))
@@ -2779,6 +3042,13 @@ def build_schematic(
         else:
             _clear(component_ports)
         symbol_display = spec.value
+        if spec.kind == "V" and spec.value is not None and not spec.model:
+            # Make the editable symbol disclose its waveform family.  The
+            # carrier template ships with an AC example label (10Vpk/5kHz),
+            # which is misleading for compact DC source syntax.
+            symbol_display = f"DC {spec.value}"
+        if spec.kind in NATIVE_OPAMP_MODELS:
+            symbol_display = spec.model
         if (
             (
                 spec.kind in {"V", "I", "BV", "BI", "T"}
@@ -2789,7 +3059,7 @@ def build_schematic(
             symbol_display = (
                 spec.model if len(spec.model) <= 48 else spec.model[:45] + "..."
             )
-        _set_symbol_labels(symbol_item, spec.kind, spec.refdes, symbol_display)
+        _set_symbol_labels(symbol_item, spec.kind, spec.refdes + ("A" if spec.kind in NATIVE_OPAMP_MODELS else ""), symbol_display)
 
         display_value = spec.value
         numeric_value = None
@@ -2806,7 +3076,37 @@ def build_schematic(
         if spec.kind in {"OSC6", "XFG3"}:
             _add_virtual_instrument_state(root, spec, circuit_item)
 
+        if ce_profile and spec.refdes in ce_profile["vertical"]:
+            for key, value in {"M00":"0", "M01":"1", "M10":"-1", "M11":"0"}.items():
+                sym.set("Transformer-" + key, value)
+        if ce_profile and spec.kind == "C":
+            for key, value in {"M00":"-1", "M01":"0", "M10":"0", "M11":"-1"}.items():
+                sym.set("Transformer-" + key, value)
         pin_info = _symbol_pin_info(symbol_item)
+        if pin_info:
+            center_x = (min(p['local_x'] for p in pin_info.values()) + max(p['local_x'] for p in pin_info.values())) / 2
+            center_y = (min(p['local_y'] for p in pin_info.values()) + max(p['local_y'] for p in pin_info.values())) / 2
+            if ce_profile and (spec.kind == "C" or spec.refdes in ce_profile["vertical"]):
+                # Counter-rotate only text; geometry and electrical pins keep
+                # the native rotation. Values remain readable horizontally.
+                a, b, c, d = [float(sym.get("Transformer-"+k)) for k in ("M00","M01","M10","M11")]
+                for tag, offset in (("CIITSymTextCompName", -9), ("CIITSymTextCompValue", 9)):
+                    label = sym.find("./Objects/Item/" + tag)
+                    if label is not None:
+                        px = center_x + (18 if spec.kind == "R" else 0)
+                        py = center_y + (offset if spec.kind == "R" else -27 if offset < 0 else 27)
+                        for key, value in {"M00":a,"M01":c,"M10":b,"M11":d,
+                                           "M20":a*px+b*py,"M21":c*px+d*py}.items():
+                            label.set("Transformer-"+key, f"{value:g}")
+                        label.set("HorizontalAlign", "0" if spec.kind == "R" else "1")
+            # Normalize vendor artwork saved with internal drawing offsets.
+            dx, dy = round((center_x - 63) / 9) * 9, round((center_y - 54) / 9) * 9
+            sym.set('Transformer-M20', f'{x-dx:g}')
+            sym.set('Transformer-M21', f'{y-dy:g}')
+            for pin in pin_info.values():
+                pin['right_facing'] = pin['local_x'] > center_x
+                pin['local_x'] -= dx
+                pin['local_y'] -= dy
         objects.append(symbol_item)
         _add_placeholder(refs, symbol_item)
         component_items.append(element_item)
@@ -2850,8 +3150,12 @@ def build_schematic(
                     "connector_id": pin["connector_id"],
                     "port_id": port_id,
                     "symbol": symbol_item,
+                    "refdes": spec.refdes,
+                    "right_facing": pin.get('right_facing', False),
+                    "direction": pin.get('direction'),
                 }
             )
+            net_pin_points.setdefault(net_name, []).append((x + pin["local_x"], y + pin["local_y"]))
             port_items.append(port_item)
 
     node_items = [record["item"] for record in node_records.values()]
@@ -2883,6 +3187,17 @@ def build_schematic(
     for name, conns in connections.items():
         if len(conns) < 2:
             continue
+        routing_obstacles = list(placements)
+        # Reserve every other net's pin escape before routing the first net.
+        # Otherwise an early supply wire can occupy a later signal's only exit.
+        for other, pins in connections.items():
+            if other == name:
+                continue
+            for pin in pins:
+                ex, ey = pin_escape(pin, placements)
+                px, py = float(pin["x"]), float(pin["y"])
+                routing_obstacles.append({"refdes": "__pin__", "x": min(px, ex)-3,
+                    "y": min(py, ey)-3, "width": abs(px-ex)+6, "height": abs(py-ey)+6})
         node_record = node_records[name]
         for conn in conns:
             conn["extpin_id"] = _make_external_pin(
@@ -2909,7 +3224,10 @@ def build_schematic(
             wire.set("NodeText", node_text_item.get("ID"))
             points = wire.find("./Points")
             _clear(points)
-            for px, py in _orthogonal_path((start["x"], start["y"]), (end["x"], end["y"])):
+            occupied = [segment for other, paths in net_wires.items() if other != name
+                        for path in paths for segment in zip(path, path[1:])]
+            path = route_pins(start, end, routing_obstacles, occupied)
+            for px, py in path:
                 points.append(ET.Element("Item", {"X": f"{px:g}", "Y": f"{py:g}"}))
             modifier = wire.find("./ElectricalObject/ModifierInfo/Element")
             value_item = modifier.find("./Item")
@@ -2923,7 +3241,7 @@ def build_schematic(
             _add_placeholder(refs, wire_item)
             wire_items.append(wire_item)
             net_wires.setdefault(name, []).append(
-                [(px, py) for px, py in _orthogonal_path((start["x"], start["y"]), (end["x"], end["y"]))]
+                path
             )
 
         wire_items: list[ET.Element] = []
@@ -2933,6 +3251,9 @@ def build_schematic(
         else:
             jx = sum(c["x"] for c in conns) / len(conns)
             jy = sum(c["y"] for c in conns) / len(conns)
+            occupied = [segment for paths in net_wires.values() for path in paths
+                        for segment in zip(path, path[1:])]
+            jx, jy = junction_point(conns, routing_obstacles, occupied)
             owner_item, member_ids = _make_junction_pins(refs, jx, jy, len(conns), ids)
             objects.append(owner_item)
             for conn, member_id in zip(conns, member_ids):
@@ -2964,6 +3285,7 @@ def build_schematic(
         net_wires,
         probe_nets,
         str(Path(output_path).with_suffix(".ms14")),
+        net_pin_points,
     )
 
     model_warnings: list[str] = [
@@ -2977,6 +3299,10 @@ def build_schematic(
         for item in parsed.subcircuit_expansion_failures
     )
     for spec in parsed.components:
+        if spec.kind in NATIVE_OPAMP_MODELS:
+            model_warnings.append(f"{spec.refdes}: local {spec.kind} / {NATIVE_OPAMP_MODELS[spec.kind]} macromodel, section A of a separate package; native topology and electrical acceptance are still required")
+        if spec.kind == "OPAMP5":
+            model_warnings.append(f"{spec.refdes}: ideal VCVS opamp, open-loop gain 100000; no supply clipping, bandwidth, current limit or noise model")
         aliases = NATIVE_MODEL_ALIASES.get(spec.kind)
         if (
             aliases
@@ -3051,22 +3377,35 @@ def build_schematic(
         if "Circuit" in el.attrib:
             el.set("Circuit", new_circuit_id)
 
-    # Keep larger generated circuits on the printable/exported page instead of
-    # silently clipping later grid rows or rightmost component symbols.
+    # The native image API uses CircPrefs Sheet Width/Height, not just the
+    # print-page dimensions. Include routes, labels and probe information boxes.
+    extent_x = [max_component_x] + [p[0] for paths in net_wires.values() for path in paths for p in path]
+    extent_y = [max_component_y] + [p[1] for paths in net_wires.values() for path in paths for p in path]
+    sheet_width = max(960, math.ceil((max(extent_x) + 240) / 96) * 96)
+    sheet_height = max(720, math.ceil((max(extent_y) + 144) / 96) * 96)
+    sheet_settings = {"Sheet Width": sheet_width, "Sheet Height": sheet_height,
+                      "Sheet Width In Inch": sheet_width / 96, "Sheet Height In Inch": sheet_height / 96}
+    for setting in diagram.findall("./CircPrefs/CIITCircuitPrefs/Settings/Element"):
+        key = setting.get("Key", "").removeprefix("&ASC")
+        if key in sheet_settings and setting.find("Item") is not None:
+            setting.find("Item").set("Value", _asc(f"{sheet_settings[key]:g}"))
     diagram.set(
         "PageWidth",
-        f"{max(float(diagram.get('PageWidth') or 0), (max_component_x + 90) / 90):g}",
+        f"{sheet_width / 96:g}",
     )
     diagram.set(
         "PageHeight",
-        f"{max(float(diagram.get('PageHeight') or 0), (max_component_y + 90) / 90):g}",
+        f"{sheet_height / 96:g}",
     )
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ET.indent(root, space="  ")
     tree = ET.ElementTree(root)
-    tree.write(str(output_path), encoding="utf-8", xml_declaration=True)
+    if ce_profile:
+        for probe in root.iter("CIITProbeExtComponent"):
+            probe.set("Hidden", "1")
+    write_native_xml(tree, output_path)
 
     if parsed.subcircuit_expansion_failures:
         editable_model_status = (
@@ -3077,8 +3416,18 @@ def build_schematic(
     else:
         editable_model_status = "not_applicable"
 
+    layout_validation = validate_schematic_geometry(
+        placements,
+        net_wires,
+        pin_points=net_pin_points,
+        pin_exits={net: [((c['x'],c['y']), pin_escape(c,placements)) for c in pins]
+                   for net,pins in connections.items()},
+    )
+
     return {
         "xml": str(output_path),
+        "layout_profile": "common_emitter" if ce_profile else "source_series_shunt" if simple_profile else "pin_escape_obstacle_routing",
+        "geometry": {"placements": placements, "wires": net_wires, "pins": net_pin_points},
         "components": [
             {
                 "refdes": spec.refdes,
@@ -3105,6 +3454,7 @@ def build_schematic(
         },
         "unsupported": parsed.unsupported,
         "model_warnings": model_warnings,
+        "layout_validation": layout_validation,
         "probes": probes,
         "counts": {
             "components": len(component_items),

@@ -173,7 +173,7 @@ class NativeSweepTest(unittest.TestCase):
         fake.circuit_info.return_value = {"name": "Native Test", "file": "C:/circuits/native.ms14"}
         fake.enum_components.return_value = ["R1"]
         fake.get_rlc_value.return_value = {"component": "R1", "value": 1000.0}
-        fake.run_dc_operating_point.return_value = {"results": {"V(out)": {"rows": [[1.0]]}}}
+        fake.run_dc_operating_point.return_value = {"ready": True, "results": {"V(out)": {"rows": [[1.0]]}}}
         with patch.object(server, "client", fake):
             result = server.run_native_parameter_sweep(
                 _readiness_for([{"refdes": "R1", "target": "R1.value"}]),
@@ -186,6 +186,26 @@ class NativeSweepTest(unittest.TestCase):
         self.assertTrue(result["restored_original_values"])
         self.assertEqual(fake.set_rlc_value.call_args_list[-1].args, ("R1", 1000.0))
         self.assertFalse(result["source_mutated"])
+
+    def test_native_failure_does_not_source_connectivity_table(self) -> None:
+        for outcome in (RuntimeError("output not found"), {"ready": False, "timed_out": True}):
+            with self.subTest(outcome=outcome):
+                fake = Mock()
+                fake.circuit_info.return_value = {"name": "Native Test"}
+                fake.enum_components.return_value = ["R1"]
+                fake.get_rlc_value.return_value = {"value": 1000.0}
+                if isinstance(outcome, Exception):
+                    fake.run_dc_operating_point.side_effect = outcome
+                else:
+                    fake.run_dc_operating_point.return_value = outcome
+                with patch.object(server, "client", fake):
+                    result = server.run_native_parameter_sweep(
+                        _readiness_for([{"refdes": "R1", "target": "R1.value"}]),
+                        [{"refdes": "R1", "values": [900.0]}], "V(out)", _approval())
+                self.assertEqual(result["state"], "failed")
+                self.assertEqual(fake.set_rlc_value.call_args_list[-1].args, ("R1", 1000.0))
+                fake.run_command_file.assert_not_called()
+                fake.report_netlist.assert_not_called()
 
     def test_applies_only_to_copy_and_reopens_source(self) -> None:
         with tempfile.TemporaryDirectory() as root:

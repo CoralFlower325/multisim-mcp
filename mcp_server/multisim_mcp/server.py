@@ -96,6 +96,10 @@ from multisim_mcp.native_sweep import (
     validate_native_sweep_patch_draft,
 )
 from multisim_mcp.preferred_values import parse_spice_scalar
+from multisim_mcp.natural_engineering import parse_natural_request
+from multisim_mcp.natural_rlc import parse_natural_rlc_request
+from multisim_mcp.natural_opamp import parse_natural_opamp_request
+from multisim_mcp.model_engineering import model_plan_engineering_request
 from multisim_mcp.native_sweep_report import (
     compare_native_sweep_baseline as compare_native_sweep_records,
     export_native_sweep_report as write_native_sweep_report,
@@ -174,6 +178,7 @@ from multisim_mcp.schematic_builder import (
     prepare_simulation_netlist,
     template_search_paths,
 )
+from multisim_mcp.topology_validation import compare_pin_connections, compare_roundtrip_topology
 from multisim_mcp.spice_raw import parse_raw, summarize_columns, write_csv
 from multisim_mcp.spice_adapter import circuit_design_from_spice
 from multisim_mcp.spice_provenance import (
@@ -1556,7 +1561,7 @@ def save_circuit(path: str | None = None) -> dict:
 
 
 @mcp.tool()
-def get_circuit_image(path: str, image_format: int = 2) -> dict:
+def get_circuit_image(path: str, image_format: int = 0) -> dict:
     """Export the circuit schematic as an image."""
     return {"path": client.get_circuit_image(path, image_format)}
 
@@ -1722,28 +1727,23 @@ def run_native_parameter_sweep(
         for parameters in combinations:
             for refdes, value in parameters.items():
                 client.set_rlc_value(refdes, value)
-            if analysis == "dc":
-                outcome = client.run_dc_operating_point([output_name], float(timeout), max_points)
-            elif analysis == "transient":
-                outcome = client.run_transient(
-                    output_name,
-                    float(sample_rate),
-                    num_samples,
-                    float(duration),
-                    False,
-                    float(timeout),
-                    max_points,
-                )
-            else:
-                outcome = client.run_ac_sweep(
-                    [output_name],
-                    0,
-                    num_frequency_points,
-                    float(start_frequency),
-                    float(stop_frequency),
-                    float(timeout),
-                    max_points,
-                )
+            try:
+                if analysis == "dc":
+                    outcome = client.run_dc_operating_point([output_name], float(timeout), max_points)
+                elif analysis == "transient":
+                    outcome = client.run_transient(output_name, float(sample_rate), num_samples, float(duration), False, float(timeout), max_points)
+                else:
+                    outcome = client.run_ac_sweep([output_name], 0, num_frequency_points, float(start_frequency), float(stop_frequency), float(timeout), max_points)
+                outcome["execution_backend"] = "native-com"
+            except Exception as native_exc:
+                # ReportNetlist exports connectivity tables, not a SPICE deck.
+                # Preserve the failure and restore values in the enclosing finally.
+                raise RuntimeError(
+                    "Native analysis failed; no executable-netlist fallback is available: "
+                    + str(native_exc)[:512]
+                ) from native_exc
+            if outcome.get("timed_out") or outcome.get("ready") is not True:
+                raise RuntimeError("Native analysis did not return ready outputs")
             results.append({"parameters": parameters, "analysis": outcome})
     except Exception as exc:
         execution_error = str(exc)[:1024]
@@ -2139,6 +2139,15 @@ def _create_schematic_impl(
         xml_path,
         probe_nets=selected_probes,
     )
+    # Persist the deterministic geometry preflight next to the editable
+    # schematic so later import/repair steps can inspect the exact build.
+    layout_report_path = output_path.with_name(output_path.stem + ".layout-validation.json")
+    if layout_report_path.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing file: {layout_report_path}")
+    layout_report_path.write_text(
+        json.dumps(build_result.get("layout_validation", {}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     encode_result = codec.encode(str(xml_path), str(output_path))
     result: dict = {
         "success": True,
@@ -2148,6 +2157,8 @@ def _create_schematic_impl(
         "encode": encode_result,
         "ms14": str(output_path),
         "xml": str(xml_path),
+        "layout_validation": build_result.get("layout_validation", {}),
+        "layout_validation_path": str(layout_report_path),
         "experimental_probes": include_experimental_probes,
     }
 
@@ -2169,6 +2180,30 @@ def _create_schematic_impl(
         finally:
             verification_path.unlink(missing_ok=True)
         expected_specs = [item for item in parsed.components if item.kind != "GND"]
+        topology_diff = compare_roundtrip_topology(
+            (spec.refdes for spec in expected_specs),
+            (net for net in build_result.get("nets", []) if net != "0"),
+            exported,
+        )
+        pin_diff = compare_pin_connections(
+            {spec.refdes: list(spec.nodes) for spec in expected_specs},
+            exported,
+        )
+        topology_diff_path = output_path.with_name(output_path.stem + ".topology-diff.json")
+        topology_diff_path.write_text(
+            json.dumps(topology_diff, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["topology_diff"] = topology_diff
+        result["topology_diff_path"] = str(topology_diff_path)
+        topology_diff["pin_connections"] = pin_diff
+        topology_diff_path.write_text(
+            json.dumps(topology_diff, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if topology_diff["status"] != "pass":
+            missing = topology_diff["missing_components"] + topology_diff["missing_nets"]
+            raise RuntimeError("Multisim round-trip topology mismatch: " + ", ".join(missing))
         native_components: dict[str, bool] = {}
         native_evidence: dict[str, str] = {}
         enumerated_components = set(result["verification"]["components"])
@@ -2225,7 +2260,7 @@ def _create_schematic_impl(
     if image_path:
         assert image is not None
         image.parent.mkdir(parents=True, exist_ok=True)
-        client.get_circuit_image(str(image), 2)
+        client.get_circuit_image(str(image), 0)
         result["image"] = str(image)
     return result
 
@@ -2318,6 +2353,249 @@ def _run_ngspice_netlist_impl(
     if heartbeat is not None:
         heartbeat()
     return result
+
+
+@mcp.tool()
+def plan_model_engineering_request(
+    text: str,
+    provider_config_path: str | None = None,
+    provider: str | None = None,
+    fallback_providers: list[str] | None = None,
+    allow_failover: bool = False,
+    timeout: float = 60.0,
+) -> dict:
+    """Use a configured model to propose a requirement, then validate it locally.
+
+    The model receives one narrow tool and cannot return a schematic, file path,
+    shell command or executable SPICE. The resulting proposal is still only a
+    plan until native execution is requested separately.
+    """
+    return model_plan_engineering_request(
+        text, provider_config_path=provider_config_path, provider=provider,
+        fallback_providers=tuple(fallback_providers or ()), allow_failover=allow_failover,
+        timeout=timeout,
+    )
+
+
+@mcp.tool()
+def run_model_engineering_request(
+    text: str,
+    output_dir: str,
+    execute: bool = False,
+    provider_config_path: str | None = None,
+    provider: str | None = None,
+    fallback_providers: list[str] | None = None,
+    allow_failover: bool = False,
+    timeout: float = 60.0,
+) -> dict:
+    """Model-propose, locally validate, then optionally run the native RC flow."""
+    from multisim_mcp.model_engineering_run import run_model_engineering
+    return run_model_engineering(
+        text, output_dir, execute=execute, provider_config_path=provider_config_path, provider=provider,
+        fallback_providers=tuple(fallback_providers or ()), allow_failover=allow_failover,
+        timeout=timeout,
+    )
+
+
+@mcp.tool(com_serialized=False)
+def submit_model_engineering_request(
+    text: str,
+    output_dir: str,
+    provider_config_path: str | None = None,
+    provider: str | None = None,
+    fallback_providers: list[str] | None = None,
+    allow_failover: bool = False,
+    model_timeout: float = 60.0,
+    job_timeout: float = 7200.0,
+    heartbeat_timeout: float = 180.0,
+) -> JobSubmission:
+    """Queue an auditable model-to-Multisim engineering run.
+
+    The worker persists the model plan before native execution and exposes the
+    same durable status/SSE contract as other long-running experiment jobs.
+    """
+    if not isinstance(text, str) or not text.strip() or len(text) > 4000:
+        raise ValueError("text must contain 1-4000 characters")
+    if not isinstance(output_dir, str) or not output_dir.strip():
+        raise ValueError("output_dir must not be empty")
+    output_path = Path(output_dir).expanduser().resolve()
+    if output_path == Path(output_path.anchor):
+        raise ValueError("output_dir must not be a filesystem root")
+    if output_path.exists():
+        raise FileExistsError("output_dir must be a new directory")
+    if isinstance(model_timeout, bool) or not math.isfinite(float(model_timeout)) or not 0 < float(model_timeout) <= 120:
+        raise ValueError("model_timeout must be between 0 and 120 seconds")
+    if isinstance(job_timeout, bool) or not math.isfinite(float(job_timeout)) or not 1 <= float(job_timeout) <= 86_400:
+        raise ValueError("job_timeout must be between 1 and 86400 seconds")
+    if float(job_timeout) <= float(model_timeout):
+        raise ValueError("job_timeout must exceed model_timeout")
+    if isinstance(heartbeat_timeout, bool) or not math.isfinite(float(heartbeat_timeout)) or not 10 <= float(heartbeat_timeout) <= 900:
+        raise ValueError("heartbeat_timeout must be between 10 and 900 seconds")
+    if float(heartbeat_timeout) <= float(model_timeout):
+        raise ValueError("heartbeat_timeout must exceed model_timeout")
+    fallbacks = tuple(fallback_providers or ())
+    if any(not isinstance(item, str) or not item.strip() for item in fallbacks):
+        raise ValueError("fallback_providers must contain non-empty provider ids")
+    return _job_manager().submit(
+        {
+            "job_kind": "model_engineering",
+            "text": text,
+            "output_dir": str(output_path),
+            "provider_config_path": provider_config_path,
+            "provider": provider,
+            "fallback_providers": list(fallbacks),
+            "allow_failover": bool(allow_failover),
+            "model_timeout": float(model_timeout),
+            "job_timeout": float(job_timeout),
+            "heartbeat_timeout": float(heartbeat_timeout),
+        }
+    )
+
+
+@mcp.tool(com_serialized=False)
+def submit_natural_engineering_job(
+    kind: str, text: str, output_dir: str, job_timeout: float = 7200.0,
+) -> JobSubmission:
+    """Queue a native RC, RLC, or OPAMP engineering workflow."""
+    if kind not in {"rc", "rlc", "opamp"}:
+        raise ValueError("kind must be rc, rlc, or opamp")
+    if not isinstance(text, str) or not text.strip() or len(text) > 4000:
+        raise ValueError("text must contain 1-4000 characters")
+    output_path = Path(output_dir).expanduser().resolve()
+    if output_path == Path(output_path.anchor) or output_path.exists():
+        raise ValueError("output_dir must be a new non-root directory")
+    if isinstance(job_timeout, bool) or not math.isfinite(float(job_timeout)) or not 1 <= float(job_timeout) <= 86_400:
+        raise ValueError("job_timeout must be between 1 and 86400 seconds")
+    return _job_manager().submit({
+        "job_kind": "natural_engineering", "natural_kind": kind,
+        "text": text, "output_dir": str(output_path), "job_timeout": float(job_timeout),
+    })
+
+
+@mcp.tool()
+def run_natural_engineering_request(text: str, output_dir: str, execute: bool = False) -> dict:
+    """Preview or execute supported natural RC requirements in a new output directory.
+
+    Explicit execution generates .ms14 files, runs native OP/AC/TRAN for bounded
+    candidates and exports acceptance evidence. No external AI model or source-
+    netlist simulation fallback is used. Review disclosed assumptions in preview.
+    """
+    from multisim_mcp.natural_engineering_run import run_natural_engineering
+    return run_natural_engineering(text, output_dir, execute=execute)
+
+
+@mcp.tool()
+def plan_natural_engineering_request(text: str) -> dict:
+    """Translate a bounded natural-language electrical request into a validated plan.
+
+    The returned netlist is a proposal only. Callers must review it, create the
+    native schematic, and run native measurements before accepting a design.
+    Ambiguous requirements fail closed instead of selecting an unverified topology.
+    """
+    return parse_natural_request(text)
+
+
+@mcp.tool()
+def plan_natural_rlc_engineering_request(text: str) -> dict:
+    """Build a bounded RLC contract and SPICE preview without native execution.
+
+    Native RLC acceptance remains disabled until the corresponding Multisim
+    measurement adapter has passed a real-version regression.
+    """
+    return parse_natural_rlc_request(text)
+
+
+@mcp.tool()
+def run_natural_rlc_engineering_request(text: str, output_dir: str, execute: bool = False) -> dict:
+    """Preview or execute bounded RLC candidates with native Multisim acceptance."""
+    from multisim_mcp.natural_rlc_run import run_natural_rlc_engineering
+    return run_natural_rlc_engineering(text, output_dir, execute=execute)
+
+
+@mcp.tool()
+def plan_natural_opamp_engineering_request(text: str) -> dict:
+    """Build a bounded non-inverting OPAMP5 contract and SPICE preview."""
+    return parse_natural_opamp_request(text)
+
+
+@mcp.tool()
+def run_natural_opamp_engineering_request(text: str, output_dir: str, execute: bool = False) -> dict:
+    """Preview or execute the bounded non-inverting OPAMP5 native workflow."""
+    from multisim_mcp.natural_opamp_run import run_natural_opamp_engineering
+    return run_natural_opamp_engineering(text, output_dir, execute=execute)
+
+
+@mcp.tool()
+def run_generated_analog_project(proposal: dict[str, Any], output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Build and verify a composed linear analog design in native Multisim 14.3.
+
+    The host AI translates the user's request into proposal fields: title,
+    application, netlist, probe_nets, experiments (op/ac with commands), checks.
+    Accepts up to 64 R/C/L, DC/AC voltage sources and ideal OPAMP5 devices in any
+    connected topology. Also accepts explicit LM324AJ from a licensed local
+    template pack, with native model identity verification and OP/AC/TRAN
+    sampled checks (no independent ideal-model equivalence). Other vendor
+    models and semiconductors are rejected. Checks contain analysis, net, quantity,
+    min/max, optional reference_net; AC requires frequency_min_hz/max_hz.
+    Use quantity=value for OP, magnitude or phase_deg for AC. A reference_net
+    checks the voltage ratio. Every sample in the specified band must pass.
+    LM324AJ requires OP and AC and checks for every analysis. Its optional
+    transient uses quantity=value with time_min_s/time_max_s, and a DC/AC
+    voltage source may append PULSE(low high delay rise fall width period).
+    Preview performs no writes/COM. Execute creates a new .ms14, verifies every
+    native pin, runs native analyses, checks ideal-model phasors against
+    independent nodal equations, exports schematic PNG, matrices, CSV and HTML.
+    Missing checks yields reference-only acceptance, not requirements approval.
+    """
+    from multisim_mcp.generated_analog_run import run_generated_analog_project as run
+    return run(proposal, output_dir, execute=execute)
+
+
+@mcp.tool()
+def plan_natural_analog_frontend(text: str) -> dict[str, Any]:
+    """Translate a bounded sensor analog-front-end request into a native proposal."""
+    from multisim_mcp.natural_analog_frontend import parse_natural_analog_frontend
+    return parse_natural_analog_frontend(text)
+
+
+@mcp.tool()
+def run_natural_analog_frontend(text: str, output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Generate and verify a sensor front end from Chinese/English requirements."""
+    from multisim_mcp.natural_analog_frontend_run import run_natural_analog_frontend as run
+    return run(text, output_dir, execute=execute)
+
+
+@mcp.tool()
+def plan_natural_dc_network(text: str) -> dict[str, Any]:
+    """Translate a bounded DC divider request into a native proposal."""
+    from multisim_mcp.natural_dc_network import parse_natural_dc_network
+    return parse_natural_dc_network(text)
+
+
+@mcp.tool()
+def run_natural_dc_network(text: str, output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Generate and verify a resistive DC divider from a natural-language request."""
+    from multisim_mcp.natural_dc_network_run import run_natural_dc_network as run
+    return run(text, output_dir, execute=execute)
+
+
+@mcp.tool()
+def plan_natural_common_emitter(text: str) -> dict[str, Any]:
+    """Plan a bounded single-NPN common-emitter amplifier request."""
+    from multisim_mcp.natural_common_emitter import parse_natural_common_emitter
+    return parse_natural_common_emitter(text)
+
+
+@mcp.tool()
+def run_natural_common_emitter(text: str, output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Build a bounded 2N3904 amplifier and verify native OP/AC/pulse measurements.
+
+    Requires a licensed local pack with VDC and VPULSE carriers. Saves the
+    editable schematic, PNG, raw measurements, model/pin checks and report.
+    Success verifies declared sampled conditions; visual review is still needed.
+    """
+    from multisim_mcp.natural_common_emitter_run import run_natural_common_emitter as run
+    return run(text, output_dir, execute=execute)
 
 
 @mcp.tool()

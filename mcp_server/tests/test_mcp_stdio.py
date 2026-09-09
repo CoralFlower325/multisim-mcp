@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +20,22 @@ from multisim_mcp.tool_profiles import PROFILE_TOOL_NAMES, TOOL_PROFILE_ENV
 
 
 class McpStdioSmokeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_composed_analog_preview_is_callable_over_stdio(self) -> None:
+        package_root = Path(multisim_mcp.__file__).resolve().parent.parent
+        environment = get_default_environment()
+        environment['PYTHONPATH'] = os.pathsep.join(dict.fromkeys([str(package_root), *[p for p in sys.path if p]]))
+        params = StdioServerParameters(command=sys.executable,args=['-m','multisim_mcp.server'],env=environment)
+        proposal = json.loads((Path(__file__).resolve().parents[2]/'examples/generated-analog/two-stage-lowpass.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            output = str(Path(tmp)/'preview')
+            async with Client(stdio_client(params),mode='2026-07-28') as session:
+                response = await session.call_tool('run_generated_analog_project',{'proposal':proposal,'output_dir':output,'execute':False})
+                self.assertFalse(response.is_error)
+                result = response.structured_content
+                self.assertTrue(result['success'])
+                self.assertEqual(result['verification_status'],'unverified')
+                self.assertFalse(Path(output).exists())
+
     async def _connect(
         self, mode: str, tool_profile: str | None = None
     ) -> tuple[str, set[str], set[str], set[str], dict | None]:
@@ -61,7 +79,7 @@ class McpStdioSmokeTest(unittest.IsolatedAsyncioTestCase):
                 mode
             )
             self.assertEqual(protocol, expected_protocol)
-            self.assertEqual(len(names), 87)
+            self.assertEqual(len(names), 104)
             self.assertEqual(len(prompts), 5)
             self.assertEqual(len(resources), 20)
 

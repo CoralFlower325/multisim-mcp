@@ -1,13 +1,11 @@
-"""Loopback-only project/read-only HTTP bridge for the visual workbench.
+"""Loopback-only HTTP bridge for the visual workbench.
 
 The MCP server remains the primary integration surface.  This tiny bridge is
-only for a local browser UI: it binds to loopback by default, accepts no
-filesystem path from the request, serves one bounded project snapshot, and
-never mutates the project or starts an EDA backend.  The explicit provider
-probe route performs a user-requested models-endpoint check without writing
-configuration or returning credential values.  The assistant chat route uses
-the configured provider for a bounded, tool-less design discussion; it never
-changes the project or starts an EDA operation.
+only for a local browser UI: it binds to loopback by default and serves bounded
+project data. Read-only inspection and chat do not mutate projects. The model-
+engineering routes are the controlled backend handoff for a future standalone
+UI and write only to a caller-supplied new output directory through the
+audited engineering service.
 """
 
 from __future__ import annotations
@@ -25,6 +23,8 @@ from . import __version__
 from .api_contract import build_capabilities, build_error
 from .job_engine import ExperimentJobManager, default_job_dir
 from .model_provider import ModelMessage, ModelProviderRegistry, ModelRuntimeError
+from .model_engineering import model_plan_engineering_request
+from .model_engineering_run import run_model_engineering
 from .design_plans import plan_design_options, select_design_option
 from .design_specifications import prepare_design_specification
 from .netlist_drafts import prepare_netlist_draft
@@ -873,6 +873,79 @@ class _WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "service": "multisim-mcp-workbench",
+                    **result,
+                },
+            )
+            return
+        if route == "/api/model-engineering/plan":
+            try:
+                payload = self._read_json_body()
+                text = payload.get("text")
+                result = model_plan_engineering_request(
+                    text,
+                    provider_config_path=payload.get("provider_config_path"),
+                    provider=payload.get("provider"),
+                    fallback_providers=tuple(payload.get("fallback_providers", ())),
+                    allow_failover=payload.get("allow_failover", False),
+                    timeout=payload.get("timeout", 60.0),
+                )
+            except (TypeError, ValueError, OSError, ModelRuntimeError) as exc:
+                self._send_json(
+                    422 if isinstance(exc, (TypeError, ValueError)) else 502,
+                    {
+                        "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                        "service": "multisim-mcp-workbench",
+                        "success": False,
+                        "error": self._structured_error(exc, route),
+                        "credential_values_exposed": False,
+                    },
+                )
+                return
+            self._send_json(
+                200,
+                {
+                    "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                    "service": "multisim-mcp-workbench",
+                    "success": True,
+                    "read_only": True,
+                    **result,
+                },
+            )
+            return
+        if route == "/api/model-engineering/run":
+            try:
+                payload = self._read_json_body()
+                text = payload.get("text")
+                output_dir = payload.get("output_dir")
+                result = run_model_engineering(
+                    text,
+                    output_dir,
+                    execute=payload.get("execute", False),
+                    provider_config_path=payload.get("provider_config_path"),
+                    provider=payload.get("provider"),
+                    fallback_providers=tuple(payload.get("fallback_providers", ())),
+                    allow_failover=payload.get("allow_failover", False),
+                    timeout=payload.get("timeout", 60.0),
+                )
+            except (TypeError, ValueError, OSError, ModelRuntimeError) as exc:
+                self._send_json(
+                    422 if isinstance(exc, (TypeError, ValueError)) else 502,
+                    {
+                        "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                        "service": "multisim-mcp-workbench",
+                        "success": False,
+                        "error": self._structured_error(exc, route),
+                        "credential_values_exposed": False,
+                    },
+                )
+                return
+            self._send_json(
+                200,
+                {
+                    "schema_version": WORKBENCH_API_SCHEMA_VERSION,
+                    "service": "multisim-mcp-workbench",
+                    "success": bool(result.get("success")),
+                    "read_only": not bool(payload.get("execute", False)),
                     **result,
                 },
             )

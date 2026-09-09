@@ -13,6 +13,10 @@ import copy
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mcp_server"))
+from multisim_mcp.native_xml import parse_native_xml, write_native_xml
 
 
 def _asc(value: str) -> str:
@@ -38,7 +42,7 @@ def _write_template(path: Path, element: ET.Element) -> Path:
             node.text = None
         if node.tail is not None and not node.tail.strip():
             node.tail = None
-    ET.ElementTree(element).write(path, encoding="ASCII", xml_declaration=True)
+    write_native_xml(ET.ElementTree(element), path)
     return path
 
 
@@ -48,7 +52,7 @@ def extract_templates(
     kind: str,
     output_dir: Path,
 ) -> list[Path]:
-    root = ET.parse(source).getroot()
+    root = parse_native_xml(source).getroot()
     component_item: ET.Element | None = None
     component: ET.Element | None = None
     for item in root.iter("Item"):
@@ -97,6 +101,11 @@ def extract_templates(
         )
         for index, item in enumerate(port_items, start=1)
     )
+    model_item = next((item for item in root.iter("Item")
+                       if item.get("CiID") == component.get("Model")
+                       and item.find("CiModel") is not None), None)
+    if model_item is not None:
+        outputs.append((output_dir / f"{kind}_model.xml", copy.deepcopy(model_item)))
 
     # Virtual instruments (for example XSC1) keep their front-panel settings
     # outside the component tree. Preserve that state as a separate template;
@@ -133,6 +142,26 @@ def extract_templates(
     return written
 
 
+def extract_probe_templates(source: Path, output_dir: Path) -> list[Path]:
+    """Preserve the three linked objects needed by native output enumeration."""
+    root = parse_native_xml(source).getroot()
+    element = next((item for item in root.iter("Item") if item.find("CiProbeExtComp") is not None), None)
+    if element is None:
+        raise ValueError("sample contains no native probe")
+    symbol = next((item for item in root.iter("Item")
+                   if item.find("CIITProbeExtComponent") is not None
+                   and item.find("CIITProbeExtComponent").get("CiProbeExtComp") == element.get("CiID")), None)
+    if symbol is None:
+        raise ValueError("native probe has no linked symbol")
+    package = symbol.find("CIITProbeExtComponent").get("FileDataPackageID")
+    instrument = next((node for node in root.iter("CSourceSymbolCollectNode") if node.get("CompLongName") == package), None)
+    if instrument is None:
+        raise ValueError("native probe has no linked instrument state")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return [_write_template(output_dir / name, copy.deepcopy(item)) for name,item in
+            (("probe_element.xml",element),("probe_symbol.xml",symbol),("probe_instrument.xml",instrument))]
+
+
 def extract_structural_templates(
     source: Path,
     output_dir: Path,
@@ -140,7 +169,7 @@ def extract_structural_templates(
     minimal_source: Path | None = None,
 ) -> list[Path]:
     """Derive reusable wiring plus a blank version-matched project shell."""
-    root = ET.parse(source).getroot()
+    root = parse_native_xml(source).getroot()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     def first_item(class_name: str, predicate) -> ET.Element:
@@ -195,7 +224,7 @@ def extract_structural_templates(
     junction_owner = first_item("CODPinComp", pin_with("0", "CODPinComp", minimum=2))
 
     minimal_path = minimal_source or source
-    minimal = ET.parse(minimal_path).getroot()
+    minimal = parse_native_xml(minimal_path).getroot()
     main_diagram = None
     circuit_item = None
     for diagram in minimal.iter("CIITDiagram"):

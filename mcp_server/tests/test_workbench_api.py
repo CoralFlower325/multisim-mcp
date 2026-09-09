@@ -547,6 +547,68 @@ class WorkbenchApiTest(unittest.TestCase):
                 thread.join(timeout=3)
                 server.server_close()
 
+    def test_model_engineering_plan_endpoint_calls_audited_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            server = create_workbench_server(str(root), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                request = Request(
+                    f"{base}/api/model-engineering/plan",
+                    data=json.dumps({"text": "设计1kHz RC低通", "provider": "local-test"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                expected = {"schema_version": 2, "validation": {"status": "pass"}}
+                with patch("multisim_mcp.workbench_api.model_plan_engineering_request", return_value=expected) as plan:
+                    with urlopen(request, timeout=3) as response:
+                        payload = json.loads(response.read())
+                self.assertTrue(payload["success"])
+                self.assertTrue(payload["read_only"])
+                self.assertEqual(payload["schema_version"], 2)
+                plan.assert_called_once()
+                self.assertEqual(plan.call_args.args[0], "设计1kHz RC低通")
+            finally:
+                server.shutdown()
+                thread.join(timeout=3)
+                server.server_close()
+
+    def test_model_engineering_run_endpoint_forwards_execute_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            server = create_workbench_server(str(root), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                request = Request(
+                    f"{base}/api/model-engineering/run",
+                    data=json.dumps({
+                        "text": "设计1kHz RC低通",
+                        "output_dir": str(root / "run"),
+                        "execute": False,
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                expected = {"success": True, "verification_status": "unverified"}
+                with patch("multisim_mcp.workbench_api.run_model_engineering", return_value=expected) as run:
+                    with urlopen(request, timeout=3) as response:
+                        payload = json.loads(response.read())
+                self.assertTrue(payload["success"])
+                self.assertTrue(payload["read_only"])
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[:2], ("设计1kHz RC低通", str(root / "run")))
+                self.assertFalse(run.call_args.kwargs["execute"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=3)
+                server.server_close()
+
     def test_planning_endpoint_returns_read_only_options_without_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
