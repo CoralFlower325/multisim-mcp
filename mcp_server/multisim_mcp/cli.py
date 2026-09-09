@@ -1984,6 +1984,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("serve", help="start the MCP stdio server")
 
+    natural = subparsers.add_parser("natural-engineering", help="plan or execute a bounded natural-language RC design")
+    source = natural.add_mutually_exclusive_group(required=True)
+    source.add_argument("--text", help="natural-language RC requirements")
+    source.add_argument("--input", help="UTF-8 text file containing requirements")
+    natural.add_argument("--output", required=True, help="new evidence directory")
+    natural.add_argument("--execute", action="store_true", help="generate native projects, simulate and select component values")
+    natural.add_argument("--planner", choices=("rules", "model"), default="rules", help="use local rules or a configured model with original-requirement verification")
+    natural.add_argument("--provider-config", help="model provider configuration file; requires --planner model")
+    natural.add_argument("--provider", help="configured model provider ID; default is the active provider")
+    natural.add_argument("--model-timeout", type=float, help="model request timeout in seconds, maximum 120; default 60")
+    natural.add_argument("--json", dest="json_command", action="store_true")
+
+    native_project = subparsers.add_parser(
+        "native-project-run", help="preview or execute an engineering request on a new .ms14 copy",
+    )
+    native_project.add_argument("--request", required=True, help="structured engineering request JSON")
+    native_project.add_argument("--source", required=True, help="existing .ms14 file")
+    native_project.add_argument("--output", required=True, help="new evidence directory")
+    native_project.add_argument("--set", dest="component_values", action="append", default=[], metavar="REF=VALUE")
+    native_project.add_argument("--execute", action="store_true", help="run Multisim; default is read-only preview")
+    native_project.add_argument("--json", dest="json_command", action="store_true")
+
     doctor = subparsers.add_parser("doctor", help="diagnose local Multisim MCP setup")
     doctor.add_argument(
         "--json", dest="json_command", action="store_true", help="emit stable JSON"
@@ -3120,6 +3142,63 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _print_doctor_human(report)
         return 1 if args.strict and not report["full_workflow_ready"] else 0
+    if args.command == "natural-engineering":
+        try:
+            from .natural_engineering_run import run_natural_engineering
+            text = args.text
+            if args.input:
+                input_path = Path(args.input).expanduser().resolve()
+                if not input_path.is_file() or input_path.stat().st_size > 16000:
+                    raise ValueError("input must be a UTF-8 file no larger than 16 KB")
+                text = input_path.read_text(encoding="utf-8-sig")
+            if args.planner == "model":
+                from .model_engineering_run import run_model_engineering
+                result = run_model_engineering(text, args.output, execute=args.execute,
+                    provider_config_path=args.provider_config, provider=args.provider,
+                    timeout=args.model_timeout if args.model_timeout is not None else 60.0)
+            else:
+                if args.provider_config is not None or args.provider is not None or args.model_timeout is not None:
+                    raise ValueError("model options require --planner model")
+                result = run_natural_engineering(text, args.output, execute=args.execute)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            result = _cli_error("natural-engineering", exc)
+            print(json.dumps(result, ensure_ascii=True, indent=2) if json_output else str(exc))
+            return 2
+        if json_output or result['mode'] == 'preview':
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+        else:
+            print(result['verification_status'])
+            print(result['report'])
+        return 0 if result['success'] else 1
+    if args.command == "native-project-run":
+        try:
+            from .native_project_run import run_native_project
+            request_path = Path(args.request).expanduser().resolve()
+            if not request_path.is_file() or request_path.stat().st_size > 2_000_000:
+                raise ValueError("request must be a JSON file no larger than 2 MB")
+            request = json.loads(request_path.read_text(encoding="utf-8-sig"))
+            parameters = {}
+            for item in args.component_values:
+                refdes, separator, value = item.partition("=")
+                if not separator or refdes.casefold() in {key.casefold() for key in parameters}:
+                    raise ValueError("--set requires unique REF=VALUE pairs")
+                parameters[refdes] = value
+            result = run_native_project(
+                request, args.source, args.output, parameters=parameters, execute=args.execute,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            result = _cli_error("native-project-run", exc)
+            if json_output:
+                print(json.dumps(result, ensure_ascii=True, indent=2))
+            else:
+                print(str(exc), file=sys.stderr)
+            return 2
+        if json_output:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+        else:
+            print(f"{result['mode']}: {result.get('status', 'ready')}")
+            print(result["output_dir"])
+        return 0 if result["success"] else 1
     if args.command == "inspect-project":
         try:
             result = _run_inspect_project(args)

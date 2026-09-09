@@ -204,6 +204,63 @@ class MultisimClient:
             "last_error": clean_error(str(circuit.LastErrorMessage)),
         }
 
+    @staticmethod
+    def _typeinfo_members(obj: Any) -> list[str]:
+        """Return registered COM members without invoking them.
+
+        This is deliberately metadata-only: probing a type library must not
+        edit the active design or start a simulation.
+        """
+        try:
+            type_info = obj._oleobj_.GetTypeInfo()
+            count = int(type_info.GetTypeAttr()[6])
+            names: list[str] = []
+            for index in range(count):
+                memid = type_info.GetFuncDesc(index)[0]
+                name = str(type_info.GetDocumentation(memid)[0])
+                if name and name not in names:
+                    names.append(name)
+            return names
+        except Exception:
+            return []
+
+    def native_capability_probe(self, create_blank: bool = False) -> dict:
+        """Inspect the installed Multisim Automation API surface.
+
+        The official 14.3 type library exposes analysis and replacement APIs,
+        but this probe records whether it also exposes placement or wiring
+        primitives.  A blank circuit is created only when explicitly asked;
+        it is never saved by this operation.
+        """
+        app = self._connect_app()
+        circuit = None
+        if create_blank:
+            circuit = app.NewFile()
+            self._circuit = circuit
+        app_members = self._typeinfo_members(app)
+        circuit_members = self._typeinfo_members(circuit) if circuit is not None else []
+        placement = {
+            name: any(name.lower() == member.lower() for member in circuit_members)
+            for name in ("addcomponent", "createcomponent", "placecomponent", "newcomponent")
+        }
+        wiring = {
+            name: any(name.lower() == member.lower() for member in circuit_members)
+            for name in ("connect", "wire", "addwire", "createwire", "placewire")
+        }
+        return {
+            "version": str(app.VersionInfo),
+            "prog_id": PROG_ID,
+            "app_members": app_members,
+            "circuit_members": circuit_members,
+            "placement_primitives": placement,
+            "wiring_primitives": wiring,
+            "supports_native_placement": any(placement.values()),
+            "supports_native_wiring": any(wiring.values()),
+            "replacement_api": "ReplaceComponent" in circuit_members,
+            "analysis_api": all(name in circuit_members for name in ("DoACSweep", "DoDCOperatingPoint")),
+            "blank_circuit_created": bool(create_blank),
+        }
+
     def enum_components(self, component_type: int = 0) -> list:
         return list(self.circuit.EnumComponents(component_type) or ())
 
@@ -309,16 +366,18 @@ class MultisimClient:
             "ready_outputs": ready_names,
         }
         if pending:
+            original_error = clean_error(str(self.circuit.LastErrorMessage))
             stop_succeeded = False
             try:
-                self.circuit.StopSimulation()
+                if int(self.circuit.SimulationState) != 0:
+                    self.circuit.StopSimulation()
                 stop_succeeded = True
             except Exception:
                 pass
             result["missing_outputs"] = pending
             result["timed_out"] = True
             result["stop_succeeded"] = stop_succeeded
-            result["last_error"] = clean_error(str(self.circuit.LastErrorMessage))
+            result["last_error"] = original_error
             return result
 
         output_results = {
@@ -369,6 +428,34 @@ class MultisimClient:
             result["stop_succeeded"] = stop_succeeded
             result["last_error"] = clean_error(str(circuit.LastErrorMessage))
         return result
+
+    def run_transient_outputs(
+        self, output_names: list[str], sample_rate: float, num_samples: int,
+        duration: float, timeout: float = 30.0, max_points: int = 100000,
+    ) -> dict:
+        """Collect all requested channels from one transient run."""
+        if not output_names or len(output_names) != len(set(output_names)):
+            raise ValueError("unique output_names are required")
+        if any(not math.isfinite(v) or v <= 0 for v in (sample_rate, duration, timeout)):
+            raise ValueError("sample_rate, duration and timeout must be finite and positive")
+        if not 1 <= num_samples <= 100000 or not 1 <= max_points <= 100000:
+            raise ValueError("sample limits must be between 1 and 100000")
+        circuit = self.circuit
+        if int(circuit.SimulationState) != 0:
+            circuit.StopSimulation()
+        requested = []
+        try:
+            for name in output_names:
+                self.clear_output_request(name)
+                requested.append(name)
+                circuit.SetOutputRequest(name, 0, sample_rate, num_samples, False)
+            circuit.RunSimulation(duration, False)
+            return self._collect_analysis_outputs("tran", output_names, timeout, max_points)
+        finally:
+            if int(circuit.SimulationState) != 0:
+                circuit.StopSimulation()
+            for name in requested:
+                self.clear_output_request(name)
 
     def run_dc_operating_point(
         self, output_names: list[str], timeout: float = 30.0, max_points: int = 200
@@ -473,7 +560,8 @@ class MultisimClient:
             return str(self.circuit.SaveAs(os.path.abspath(path)))
         return str(self.circuit.Save())
 
-    def get_circuit_image(self, path: str, image_format: int = 2) -> str:
+    def get_circuit_image(self, path: str, image_format: int = 0) -> str:
+        """Export using CircuitImageFormat: PNG=0, JPG=1, BMP=2."""
         return str(self.circuit.GetCircuitImage(image_format, os.path.abspath(path)))
 
     def report_netlist(self, path: str, probes_flag: bool = False, fmt: int = 0) -> str:
@@ -535,7 +623,7 @@ class MultisimClient:
             attached.append(f"- BOM: `{os.path.basename(bom_path)}`")
         if include_image:
             image_path = os.path.join(os.path.dirname(output_path), "circuit.png")
-            self.get_circuit_image(image_path, 2)
+            self.get_circuit_image(image_path, 0)
             attached.append(
                 f"- Schematic: ![schematic]({os.path.basename(image_path)})"
             )

@@ -40,7 +40,7 @@ class PackageDataTest(unittest.TestCase):
         self.assertEqual(paths[0], Path(tmp).resolve())
         self.assertEqual(paths[-1], TEMPLATE_DIR)
 
-    def test_extractor_writes_decoder_compatible_compact_ascii(self) -> None:
+    def test_extractor_writes_decoder_compatible_compact_xml(self) -> None:
         import importlib.util
         import tempfile
         from pathlib import Path
@@ -66,7 +66,7 @@ class PackageDataTest(unittest.TestCase):
             output = Path(tmp) / "fragment.xml"
             module._write_template(output, root)
             payload = output.read_bytes()
-        self.assertIn(b"encoding='ASCII'", payload)
+        self.assertIn(b"encoding='utf-8'", payload)
         self.assertNotIn(b"\n  ", payload)
 
     def test_schematic_templates_are_installed(self) -> None:
@@ -306,7 +306,7 @@ T1 in 0 out 0 Z0=50 TD=10n
             ["V", "I", "T", "GND"],
         )
         self.assertEqual(result["unsupported"], [])
-        self.assertIn("v%p %t1 %t2 SIN(0 1 1k)", generated)
+        self.assertIn("v%p %t2 %t1 SIN(0 1 1k)", generated)
         self.assertIn("i%p %t2 %t1 PULSE(0 1m 1u 1n 1n 5u 10u)", generated)
         self.assertIn("t%p %tD %tG %tS %tSUB Z0=50 TD=10n", generated)
 

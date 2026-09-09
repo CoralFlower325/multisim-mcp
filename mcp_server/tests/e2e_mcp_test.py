@@ -175,7 +175,7 @@ async def main() -> None:
             (
                 "image",
                 "get_circuit_image",
-                {"path": str(OUT / "e2e_circuit.png"), "image_format": 2},
+                {"path": str(OUT / "e2e_circuit.png"), "image_format": 0},
             ),
         ]:
             try:
