@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract_native_component_templates import (
     extract_structural_templates,
     extract_templates,
+    extract_probe_templates,
 )
 
 
@@ -34,6 +35,7 @@ class Extraction:
 
 
 RLC_SAMPLE = "LabVIEW Multisim API Toolkit/RLC Values/RLC Values.ms14"
+PROBE_SAMPLE = "Analog/SpeechFilter.ms14"
 
 
 EXTRACTIONS = (
@@ -43,6 +45,8 @@ EXTRACTIONS = (
     Extraction(RLC_SAMPLE, "R1", "R"),
     Extraction("LowPassFilter.ms14", "C9", "C"),
     Extraction("LowPassFilter.ms14", "V1", "V"),
+    Extraction("Non-InvertingOpAmp.ms14", "V1", "VDC"),
+    Extraction("Analyses/Worst Case - Speech Filter.ms14", "V5", "VPULSE"),
     Extraction("LowPassFilter.ms14", "0", "GND"),
     Extraction("Analyses/Monte Carlo - RLC Circuit.ms14", "L1", "L"),
     Extraction(
@@ -56,6 +60,7 @@ EXTRACTIONS = (
     Extraction("Analyses/DC Sweep - CMOS Inverter.ms14", "Q1", "MNMOS"),
     Extraction("Analyses/DC Sweep - CMOS Inverter.ms14", "Q2", "MPMOS"),
     Extraction("LowPassFilter.ms14", "U4", "OPAMP5"),
+    Extraction("Non-InvertingOpAmp.ms14", "U3", "LM324AJ"),
     Extraction("Up-DownCounter.ms14", "U13", "DNOT4"),
     Extraction("Up-DownCounter.ms14", "U5", "DAND5"),
     Extraction("Up-DownCounter.ms14", "U14", "DOR5"),
@@ -70,6 +75,8 @@ def build_pack(samples_root: Path, output: Path, force: bool) -> dict:
     samples_root = samples_root.expanduser().resolve()
     output = output.expanduser().resolve()
     missing = [item.sample for item in EXTRACTIONS if not (samples_root / item.sample).is_file()]
+    if not (samples_root / PROBE_SAMPLE).is_file():
+        missing.append(PROBE_SAMPLE)
     if missing:
         raise FileNotFoundError(
             "Required licensed Multisim samples were not found: " + ", ".join(sorted(set(missing)))
@@ -108,6 +115,11 @@ def build_pack(samples_root: Path, output: Path, force: bool) -> dict:
                 decoded_by_sample[item.sample] = decoded
             for path in extract_templates(decoded, item.refdes, item.kind, output):
                 written.append(path.name)
+        probe_copy = temp_root / "probe-source.ms14"
+        shutil.copy2(samples_root / PROBE_SAMPLE, probe_copy)
+        probe_xml = Path(codec.decode(str(probe_copy))["xml"])
+        probe_xml.write_bytes(probe_xml.read_bytes().replace(b"\x00", b""))
+        written.extend(path.name for path in extract_probe_templates(probe_xml, output))
         # Installed samples may retain a much older file format than the local
         # application. Generate a blank design through the licensed Automation
         # API so structural scaffolding always matches the installed Multisim.
@@ -144,6 +156,7 @@ def build_pack(samples_root: Path, output: Path, force: bool) -> dict:
             "kind": "automation_blank",
             "multisim_version": connection["version"],
         },
+        "probe_source": PROBE_SAMPLE,
         "files": sorted(set(written)),
     }
     manifest_path = output / "local-pack-manifest.json"

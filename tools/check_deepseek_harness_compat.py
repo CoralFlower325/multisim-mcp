@@ -96,7 +96,7 @@ def load_compatibility_manifest(path: Path) -> dict[str, Any]:
         or not compatible_core_versions
         or any(
             not isinstance(version, str)
-            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+            or not re.fullmatch(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", version)
             for version in compatible_core_versions
         )
         or len(compatible_core_versions) != len(set(compatible_core_versions))

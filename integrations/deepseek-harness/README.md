@@ -1,3 +1,7 @@
+# 1.3.0-rc.1 preview update
+
+Install the candidate core with `python -m pip install multisim-mcp==1.3.0rc1`, then add `multisim-mcp-dsh-plugin@1.3.0-rc.1`. This adapter uses the configured Python MCP server; it does not bundle Python or Multisim. New capabilities remain limited to the documented validated circuit families.
+
 # Multisim MCP 的 DeepSeek Harness 插件
 
 这是一个可独立安装的 Harness bundle。它把 Multisim MCP 注册为
@@ -36,6 +40,10 @@ OIDC 暂存并由维护者 2FA 审批。完整步骤见
 - `MULTISIM_MCP_TEMPLATE_DIR`：本地组件模板包；
 - `MULTISIM_MCP_WORKDIR`：实验工作目录；
 - `MULTISIM_MCP_ARTIFACT_EXPORT_DIR`：允许导出产物的根目录。
+- 自然语言工程工具包括 RC、RLC 和 OPAMP 的 plan/run 入口；后台运行使用
+  `submit_natural_engineering_job`，`kind` 为 `rc`、`rlc` 或 `opamp`。
+- 后台任务通过 `get_experiment_job` 和 `multisim://jobs/{job_id}` 查询阶段、取消和证据。
+- 未验证元件模型和未通过拓扑/数值验收的任务会失败关闭，不会仅因生成 `.ms14` 就报告成功。
 - `MULTISIM_MCP_MODEL_ROOT`：`compile_executable_netlist` 重新哈希获批外部模型时唯一允许
   读取的本地根目录；模型 URI 必须是该目录内的相对路径。
 

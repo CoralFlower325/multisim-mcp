@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+BUNDLE_VERSION = json.loads((REPO_ROOT / "integrations/deepseek-harness/package.json").read_text(encoding="utf-8"))["version"]
 SCRIPT = REPO_ROOT / "tools" / "check_dsh_plugin_release.py"
 SPEC = importlib.util.spec_from_file_location("dsh_plugin_release_check", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -56,7 +58,7 @@ def npm_pack_package() -> dict:
 
 class DshPluginReleaseTest(unittest.TestCase):
     def test_local_package_boundary_passes(self) -> None:
-        result = release.run_checks(REPO_ROOT, expected_version="1.1.0")
+        result = release.run_checks(REPO_ROOT, expected_version=BUNDLE_VERSION)
         self.assertTrue(result["success"])
         self.assertFalse(result["registry_checked"])
         self.assertIsNone(result["registry_state"])
@@ -64,7 +66,7 @@ class DshPluginReleaseTest(unittest.TestCase):
     def test_unclaimed_name_is_valid_for_first_publication(self) -> None:
         result = release.run_checks(
             REPO_ROOT,
-            expected_version="1.1.0",
+            expected_version=BUNDLE_VERSION,
             check_registry=True,
             registry_loader=lambda name, timeout: None,
         )
@@ -96,7 +98,7 @@ class DshPluginReleaseTest(unittest.TestCase):
 
     def test_existing_target_version_is_rejected(self) -> None:
         remote = existing_package(
-            version="1.1.0",
+            version=BUNDLE_VERSION,
             repository="https://github.com/yxy050208/multisim-mcp",
         )
         result = release.run_checks(

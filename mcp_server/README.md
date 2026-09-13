@@ -8,7 +8,7 @@ experiments, exporting data, and generating reproducible reports.
 非官方 Multisim 自动化 MCP：从受限 SPICE 网表生成可编辑电路图，调用本机
 Multisim 执行实验，并导出 `.ms14`、原理图、raw、CSV、SVG 和 Markdown 报告。
 
-> MCP Core 1.2 release candidate; the current public stable release is 1.1.0.
+> MCP Core 1.3.0rc1 release candidate; stable 1.2.0 remains available.
 > This source/package does not include the React Workbench frontend. It may expose
 > optional loopback bridge APIs for compatible local clients. This project is not
 > affiliated with NI. Multisim must be
@@ -35,6 +35,7 @@ Stable and verified on Multisim 14.3:
   bilingual HTML/PDF, and reproducibility-manifest export.
 - High-level `run_circuit_experiment` workflow.
 - Read-only `plan_design_options` / `select_design_option` /
+  `review_design_requirements` /
   `prepare_design_specification` / `prepare_netlist_draft` / `resolve_component_requirements` /
   `approve_component_resolution` / `compile_executable_netlist` /
   `approve_executable_netlist` workflow that compares
@@ -54,6 +55,41 @@ Stable and verified on Multisim 14.3:
   explicit in-memory candidate, with before/after diagnoses and no auto-adoption.
 - Mixed topology/value `global_optimize_design` with exhaustive or deterministic
   Halton search, hard constraints, epsilon-aware Pareto fronts, and no auto-write.
+- `optimize_design` / `global_optimize_design` and their durable/autonomous
+  counterparts can consume the verified
+  `requirement_review` envelope directly, filling measurable hard constraints and
+  objective candidates without manual JSON copying; conflicts and ambiguous goals
+  fail closed before simulation.
+- `bind_requirement_review_to_design` performs a read-only signal/node/component
+  binding pass for an existing `CircuitDesign` snapshot and reports missing aliases
+  plus bounded R/C/L optimization candidates. When `snapshot_evidence` is supplied,
+  cross-validation and boundary review must pass. It does not edit `.ms14` files.
+- `snapshot_open_circuit` exports the currently open Multisim circuit through the
+  isolated COM worker into a new, validated snapshot directory, retaining the
+  reported netlist and COM enumeration evidence without overwriting the source.
+  Parsed component references are cross-checked against COM enumeration before
+  the snapshot recommends requirement binding. Model-sensitive devices and
+  hidden-pin carriers are surfaced as manual-review boundaries.
+- `run_native_parameter_sweep` executes an explicitly approved, bounded DC/
+  transient/AC grid against the open circuit's R/L/C values and restores every
+  original value even when a run fails; it never saves the source `.ms14`.
+- `rank_native_sweep_results` scores the returned records against one explicit
+  signal objective and produces a deterministic, digest-protected ranking. It
+  also marks all-zero, constant, and low-information outputs instead of silently
+  treating them as optimization evidence.
+- `prepare_native_sweep_patch` converts the best ranked candidate into the same
+  reversible `DesignPatch` contract used by the existing approval workflow.
+- `apply_native_sweep_patch_to_copy` requires an exact draft digest and explicit
+  approval plus an explicit saved-source acknowledgement, writes only a new
+  `.ms14` copy, then reopens the original source. Unsaved UI changes are not
+  preserved by this reopen step.
+- `compare_native_sweep_baseline` identifies the original-value candidate and
+  calculates metric and relative improvement; `export_native_sweep_report`
+  writes a Chinese-first Markdown report, JSON evidence, and SHA-256 manifest.
+  Passing an approved `.ms14` copy also packages it into the report directory
+  with a relative link and integrity metadata.
+  Passing the completed sweep result additionally emits baseline/optimized
+  waveform CSV and SVG evidence linked from the report.
 - Bounded model-planned `autonomous_correct_design`, where every topology/value
   proposal must compile and pass real experiment gates before it can advance.
 - Durable `submit_global_optimization` and `submit_autonomous_correction` jobs
@@ -563,6 +599,12 @@ every option is marked
 `planning-only`, and its execution boundary keeps schematic generation, simulation, and file
 writes false. The logical draft also keeps CircuitDesign, SPICE generation, and schematic readiness
 false. See [`DESIGN_PLANNING.md`](../docs/DESIGN_PLANNING.md).
+
+For an existing circuit, run `review_design_requirements` before the baseline experiment. Pass
+the measured hard constraints plus optional soft objectives, preferences, and assumptions. The
+read-only result detects obvious contradictory bounds and gives the optimisation services a
+stable requirement contract; it does not claim physical feasibility or modify the source design.
+See [`REQUIREMENT_ENGINEERING.md`](../docs/REQUIREMENT_ENGINEERING.md).
 
 Choose the open complete-experiment backend when ngspice is installed:
 

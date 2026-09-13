@@ -2,15 +2,31 @@
 
 本项目遵循语义化版本的预发布形式。中文为主要说明，英文摘要紧随其后。
 
-## [Unreleased]
+## [1.3.0rc1] - 2026-09-13
 
 ### 中文
+
+- 发布自然语言及组合模拟电路的原生生成、仿真、测量验收和导出预览入口。
+- 将版本化组件映射纳入安装包，修复 COM-free 测试的外部环境依赖及 CI 工具数量检查。
+- 保留预览边界：新工程需图面复核，实际验证集中在 Multisim 14.3。
 
 - 修复 COM worker 在中文（CJK 区域设置）Windows 上的路径损坏问题：客户端按 UTF-8
   写 JSON 协议，但 worker 进程此前按系统 ANSI 代码页解码自己的 stdin，导致任何
   非 ASCII 路径（如中文目录名）在 worker 侧变成乱码，编解码调用以 ENOENT 失败且
   错误信息看似路径正常。现在启动 worker 时强制 `PYTHONUTF8=1`，`system/ping`
   诊断新增 `stdio_encoding` 字段，并附回归测试。
+
+- 1.3 开发：增强标准纠错基准套件的可审计性。每个用例和整个套件现在记录 UTC
+  时间戳、耗时、通过率和统一验收判据；即使所有真实实验失败，也会保留
+  `validation.json` 与可校验的目录清单，避免摘要与清单之间出现自引用哈希失效。
+- 1.3 开发：增加稳定 Agent API 契约。`runtime_status` 现在提供可缓存的版本化
+  `api_contract`，描述 Tool Profile、功能、错误码和 durable job 状态；CLI JSON
+  错误保留 `type/message` 兼容字段，并增加统一 `code/retryable`。
+- 1.3 开发：Workbench loopback API 增加有界只读 SSE 作业事件流
+  `/api/jobs/{job_id}/events`，支持一次性快照、心跳、终态自动关闭和硬超时；不改变
+  MCP 工具、Resource 或持久化作业 schema。
+- 1.3 开发：增加只读 `review_design_requirements` 需求契约审查，在基线实验前区分硬约束、
+  软目标、偏好和假设，并拦截同一信号上的明显冲突。
 
 ### English
 
@@ -20,6 +36,22 @@
   codec execution (failing with ENOENT while the error text looked normal).
   The worker is now spawned with `PYTHONUTF8=1`; `system/ping` diagnostics
   gained a `stdio_encoding` field, covered by a regression test.
+
+- 1.3 development: hardened the standard correction benchmark suite. Per-case and
+  suite-level UTC timestamps, durations, pass rate, and acceptance criteria are
+  recorded. Even an all-failed real run retains `validation.json` and a verifiable
+  directory manifest, avoiding self-referential summary hashes.
+- 1.3 development: added a stable Agent API contract. `runtime_status` exposes a
+  cacheable versioned `api_contract` for Tool Profiles, features, error codes, and
+  durable-job states. CLI JSON errors retain `type/message` for compatibility and
+  add normalized `code/retryable` fields.
+- 1.3 development: added a bounded read-only SSE job event stream at
+  `/api/jobs/{job_id}/events` to the loopback Workbench API, with one-shot snapshots,
+  heartbeats, terminal-state close, and hard time limits; MCP tools, Resources, and
+  persisted job schemas remain unchanged.
+- 1.3 development: added the read-only `review_design_requirements` contract review,
+  separating hard constraints, soft objectives, preferences, and assumptions and
+  rejecting obvious contradictory bounds before a baseline experiment.
 
 ## [1.2.0] - 2026-09-01
 

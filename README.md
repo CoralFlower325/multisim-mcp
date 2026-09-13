@@ -8,9 +8,25 @@
 让 AI Agent 根据实验要求自动生成 Multisim 电路、运行仿真、提取实验数据，并导出
 电路图、CSV、波形图和实验报告。
 
-> 当前 GitHub 稳定发行版为 `v1.2.0`。项目非 NI 官方产品，需要本机安装并授权
+> 当前发布候选版为 `1.3.0rc1`（GitHub 标签 `v1.3.0rc1`）。项目非 NI 官方产品，需要本机安装并授权
 > Multisim 14+；COM 在独立 32 位 Python worker 中运行，MCP 前端可使用 32 或 64 位
 > Python。
+
+开发分支已加入[组合模拟电路原生工作流](docs/COMPOSED_ANALOG_WORKFLOW.md)：宿主 AI
+可通过 `run_generated_analog_project` 提交组合网表与采样指标，完成原生连接核对、
+OP/AC、完整电路图和报告导出。已在 Multisim 14.3 实测两级（14 器件）和四级
+（24 器件）RC＋理想运放电路；这不代表任意真实芯片或开关电源已支持。
+另已完成 [LM324AJ 毕业设计场景插件验收](docs/THESIS_PLUGIN_ACCEPTANCE_20260909.md)：
+经 MCP stdio 生成两级电路，运行原生 OP/AC/TRAN，根据测量校准零点后以相同指标复验。
+真实模型依赖本地授权模板；校准电压源的硬件实现和其他芯片仍未验收。
+
+新增 [2N3904 共射原生验收](docs/COMMON_EMITTER_NATIVE_ACCEPTANCE.md)：通过
+`run_natural_common_emitter` 执行中文需求，生成原生图纸并检查工作点、1kHz 增益和
+脉冲响应。图纸使用真实直流/脉冲源、共射布局和隐藏测量面板。要求重建本地模板包，
+当前仅实测 Multisim 14.3；新工程仍需图面复核，不代表第二阶段全部完成。
+
+第二阶段预览版的准确变更、验证结果和发布边界见
+[`1.3.0rc1 发布说明`](docs/RELEASE_NOTES_v1.3.0rc1.md)。
 
 > `v1.2.0` 是**不含 React 前端的 MCP Core 正式版**：包含 Python MCP 服务、CLI、EDA
 > 核心、模型/DeepSeek 适配、测试、文档及可选 loopback 桥接 API；不包含仍在独立
@@ -37,6 +53,28 @@ MIT 代码授权范围，公开仓库默认不应包含这些文件。用户需�
 `1.2.0` 正式核心将公共面扩展为 78 个工具、20 个资源模板和 5 个双语提示词，新增
 审批式设计规划、诊断/补丁评估、全局优化、自主纠错、Multisim/ngspice 差分验证与
 可恢复作业。详情见 [`v1.2.0 发布说明`](docs/RELEASE_NOTES_v1.2.0.md)。
+
+开发分支新增只读的 `review_design_requirements` 需求契约审查：在基线实验前区分硬约束、
+软目标、偏好和假设，并拦截同一信号上的明显冲突。接口说明见
+[`需求契约审查`](docs/REQUIREMENT_ENGINEERING.md)。
+开发分支还新增 `bind_requirement_review_to_design`，把契约绑定到已有设计快照并报告
+缺失信号与可优化参数，以及 `snapshot_open_circuit` 的 COM 导入快照入口；已发布的
+`v1.2.0` 仍保持 78 个工具，开发分支公共面为 95 个工具。
+
+开发分支已提供 [自然语言 RC/RLC/OPAMP 工程入口](docs/NATURAL_ENGINEERING.md)：从明确的中文/英文需求生成
+可编辑 Multisim 工程，原生仿真并比较 E24 候选，导出带验收状态的报告。当前为有限规则解析，
+尚不代表通用 AI 自动设计或任意电路支持。
+可选 `--planner model` 接入已配置的模型，先检查原始需求与提案的一致性，再执行原生实验。
+模型调用、拒绝原因和原生实验会共同留档；本机 Ollama/Qwen3 与 Multisim 14.3 已完成一次真实联合测试。
+绑定结果中的 `native_optimization_readiness` 带有完整性摘要；在用户明确批准、通过运行时门禁后，
+`run_native_parameter_sweep` 才会对当前打开工程执行有界 R/C/L 参数扫描，并在每次运行后恢复原值。
+扫描完成后可用 `rank_native_sweep_results` 按均值、峰峰值、RMS 或目标值距离自动排序候选方案。
+`prepare_native_sweep_patch` 会把最佳候选转换为现有审批体系可处理的标准可逆 `DesignPatch`。
+通过显式审批后，`apply_native_sweep_patch_to_copy` 只写入新的 `.ms14` 副本，并重新打开源工程。
+`compare_native_sweep_baseline` 会自动识别原始参数组并计算改进量；
+`export_native_sweep_report` 导出中文为主的 Markdown、JSON 和 SHA-256 清单；传入已批准生成的
+`.ms14` 副本后，还会把优化工程复制到报告目录并建立相对链接，形成可移交的证据包；传入原始
+扫描结果后，还会生成基线/优化波形 CSV 与 SVG 对照图。
 
 ## 已实现的完整闭环
 
@@ -147,6 +185,21 @@ COM worker，服务重启后未完成任务会安全地重新排队。
   命令引擎执行的结果。
 
 ## 快速开始
+
+### AI Agent Preview 安装
+
+在源码目录运行以下命令可为多个 Agent 生成 MCP 配置。Agent 可以是 64 位，
+`-Python32` 必须指向已安装 pywin32 且能连接 Multisim 的 32 位 Python：
+
+```powershell
+.\tools\install-agent.ps1 `
+  -Client all `
+  -Python32 C:\path\to\python32\python.exe
+```
+
+配置会写入 `generated-config/`。将对应 JSON 的 `mcpServers.multisim` 节点复制到
+Qwen、ChatGPT、DeepSeek 或其他支持 MCP 的 Agent 配置后重启客户端，再调用
+`runtime_status` 自检。完整边界见 [`多 Agent 安装说明`](docs/MULTI_CLIENT_INSTALL.md)。
 
 最简单的兼容部署仍是直接安装到 32 位 Python：
 
@@ -290,6 +343,10 @@ Trusted Publishing 与后续 OIDC 暂存流程见
 [`EDA 核心与后端边界`](docs/EDA_CORE.md)和受限 SPICE 转换器；原理图生成与独立
 SPICE 仿真、同步/验证/持久任务完整实验均已通过应用服务执行，现有 MCP 工具签名与
 job 存储格式保持兼容；实验 staging、报告、原子发布和回滚已移入独立流水线。
+面向 DeepSeek Harness、其他 Agent 和未来 Workbench 的稳定返回值约定见
+[`Agent API 契约`](docs/AGENT_API.md)，可从 `runtime_status.api_contract` 读取。
+产品定位、标准审批流程、极简界面原则和“AI 工程电路控制台”路线见
+[`产品愿景`](docs/PRODUCT_VISION.md)。
 
 ## 仓库结构
 

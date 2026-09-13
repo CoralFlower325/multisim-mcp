@@ -393,6 +393,16 @@ class WorkerMultisimClient:
 
         return invoke
 
+    def call_controlled(
+        self, name: str, *args: object, rpc_timeout: float | None = None,
+        cancel_requested: Callable[[], bool] | None = None, **kwargs: object,
+    ) -> Any:
+        """Invoke an allowlisted client method with cancellation controls."""
+        return self._worker.call(
+            "client", name, *args, rpc_timeout=rpc_timeout,
+            cancel_requested=cancel_requested, **kwargs,
+        )
+
     def run_command_file(
         self,
         command_file: str,

@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from multisim_mcp import server
 from multisim_mcp.eda_core import CircuitDesign
+from multisim_mcp.requirement_contract import review_design_requirements
 
 
 DESIGN = {
@@ -85,6 +86,18 @@ class DesignOptimizationServerTest(unittest.TestCase):
             server, "_job_manager", return_value=manager
         ):
             output = str(Path(tmp) / "optimization")
+            review = review_design_requirements(
+                SPEC["requirements"],
+                soft_objectives=[
+                    {
+                        "id": "maximize-output",
+                        "metric": "mean",
+                        "signal": "V(out)",
+                        "goal": "maximize",
+                        "unit": "V",
+                    }
+                ],
+            )
             result = server.submit_design_optimization(
                 DESIGN,
                 SPEC,
@@ -92,6 +105,7 @@ class DesignOptimizationServerTest(unittest.TestCase):
                 timeout_per_experiment=45.0,
                 max_points=321,
                 job_timeout=600.0,
+                requirement_review=review,
             )
         self.assertEqual(result["state"], "queued")
         submitted = manager.submit.call_args.args[0]
@@ -100,6 +114,35 @@ class DesignOptimizationServerTest(unittest.TestCase):
         self.assertEqual(submitted["optimization_spec"], SPEC)
         self.assertEqual(submitted["timeout_per_experiment"], 45.0)
         self.assertEqual(submitted["max_points"], 321)
+        self.assertEqual(
+            submitted["requirement_review_digest"], review["contract_digest"]
+        )
+
+    def test_sync_adapter_projects_verified_requirement_review(self) -> None:
+        service = Mock()
+        service.run.return_value = {"success": True, "status": "baseline_best"}
+        review = review_design_requirements(
+            SPEC["requirements"],
+            soft_objectives=[
+                {
+                    "id": "maximize-output",
+                    "metric": "mean",
+                    "signal": "V(out)",
+                    "goal": "maximize",
+                    "unit": "V",
+                }
+            ],
+        )
+        with patch.object(server, "_design_optimization_service", return_value=service):
+            server.optimize_design(
+                DESIGN,
+                {"schema_version": 1, "title": "review-driven"},
+                "C:/optimization-output",
+                requirement_review=review,
+            )
+        effective_spec = service.run.call_args.args[1]
+        self.assertEqual(effective_spec["requirements"], SPEC["requirements"])
+        self.assertEqual(effective_spec["objective"]["requirement_id"], "vout")
 
     def test_durable_adapter_requires_explicit_existing_checkpoint_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

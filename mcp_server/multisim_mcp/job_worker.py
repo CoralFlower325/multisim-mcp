@@ -116,6 +116,27 @@ def main() -> int:
             )
             if result.get("status") == "cancelled":
                 raise InterruptedError("Autonomous correction cancellation requested")
+        elif spec.get("job_kind") == "model_engineering":
+            from multisim_mcp.model_engineering_run import run_model_engineering
+
+            checkpoint("model-planning", 10, "Calling the configured model")
+            result = run_model_engineering(
+                str(spec["text"]),
+                str(spec["output_dir"]),
+                execute=True,
+                provider_config_path=spec.get("provider_config_path"),
+                provider=spec.get("provider"),
+                fallback_providers=tuple(spec.get("fallback_providers", [])),
+                allow_failover=bool(spec.get("allow_failover", False)),
+                timeout=float(spec.get("model_timeout", 60.0)),
+            )
+            checkpoint(
+                "native-execution" if result.get("native_execution_attempted") else "model-finished",
+                95 if result.get("native_execution_attempted") else 80,
+                "Model engineering run completed",
+            )
+            if result.get("verification_status") in {"failed", "model-failed", "requirements-rejected"}:
+                raise RuntimeError(str(result.get("error") or result.get("verification_status")))
         elif spec.get("job_kind") == "global_optimization":
             result = _global_optimization_service().run(
                 CircuitDesign.from_dict(spec["design"]),
@@ -131,6 +152,29 @@ def main() -> int:
             )
             if result.get("status") == "cancelled":
                 raise InterruptedError("Global optimization cancellation requested")
+        elif spec.get("job_kind") == "natural_engineering":
+            kind = str(spec.get("natural_kind", "rc"))
+            runners = {
+                "rc": "natural_engineering_run",
+                "rlc": "natural_rlc_run",
+                "opamp": "natural_opamp_run",
+            }
+            module_name = runners.get(kind)
+            if module_name is None:
+                raise ValueError("natural_kind must be rc, rlc, or opamp")
+            module = __import__(f"multisim_mcp.{module_name}", fromlist=["run_natural_engineering"])
+            function_name = {
+                "rc": "run_natural_engineering",
+                "rlc": "run_natural_rlc_engineering",
+                "opamp": "run_natural_opamp_engineering",
+            }[kind]
+            checkpoint("native-execution", 10, f"Starting natural {kind} engineering run")
+            result = getattr(module, function_name)(
+                str(spec["text"]), str(spec["output_dir"]), execute=True,
+                cancel_requested=cancel_path.exists,
+            )
+            if result.get("error", {}).get("type") == "RuntimeError" and "cancel" in str(result.get("error", {})).lower():
+                raise InterruptedError("Natural engineering cancellation requested")
         elif spec.get("job_kind") == "optimization":
             result = _design_optimization_service().run(
                 CircuitDesign.from_dict(spec["design"]),

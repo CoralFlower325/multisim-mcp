@@ -411,6 +411,11 @@ class WorkbenchApiTest(unittest.TestCase):
                 self.assertEqual(health["status"], "ok")
                 self.assertTrue(health["read_only"])
                 self.assertEqual(health["assistant"], "read-only-chat")
+                with urlopen(f"{base}/api/capabilities", timeout=3) as response:
+                    capabilities = json.loads(response.read())
+                self.assertEqual(capabilities["api_name"], "multisim-mcp-agent-api")
+                self.assertEqual(capabilities["api_version"], "1")
+                self.assertEqual(capabilities["tool_profile"]["name"], "full")
                 self.assertEqual(snapshot["source"], "local-workbench-api")
                 self.assertEqual(fixed_root_snapshot["workspace_root"], str(root.resolve()))
                 self.assertEqual(snapshot["root_manifest"]["entity_id"], "api-project")
@@ -537,6 +542,68 @@ class WorkbenchApiTest(unittest.TestCase):
                 self.assertFalse(payload["execution_boundary"]["simulation_started"])
                 self.assertNotIn("api_key", json.dumps(payload).lower())
                 self.assertEqual(fake_registry.kwargs["max_tokens"], 1200)
+            finally:
+                server.shutdown()
+                thread.join(timeout=3)
+                server.server_close()
+
+    def test_model_engineering_plan_endpoint_calls_audited_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            server = create_workbench_server(str(root), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                request = Request(
+                    f"{base}/api/model-engineering/plan",
+                    data=json.dumps({"text": "设计1kHz RC低通", "provider": "local-test"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                expected = {"schema_version": 2, "validation": {"status": "pass"}}
+                with patch("multisim_mcp.workbench_api.model_plan_engineering_request", return_value=expected) as plan:
+                    with urlopen(request, timeout=3) as response:
+                        payload = json.loads(response.read())
+                self.assertTrue(payload["success"])
+                self.assertTrue(payload["read_only"])
+                self.assertEqual(payload["schema_version"], 2)
+                plan.assert_called_once()
+                self.assertEqual(plan.call_args.args[0], "设计1kHz RC低通")
+            finally:
+                server.shutdown()
+                thread.join(timeout=3)
+                server.server_close()
+
+    def test_model_engineering_run_endpoint_forwards_execute_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            server = create_workbench_server(str(root), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                request = Request(
+                    f"{base}/api/model-engineering/run",
+                    data=json.dumps({
+                        "text": "设计1kHz RC低通",
+                        "output_dir": str(root / "run"),
+                        "execute": False,
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                expected = {"success": True, "verification_status": "unverified"}
+                with patch("multisim_mcp.workbench_api.run_model_engineering", return_value=expected) as run:
+                    with urlopen(request, timeout=3) as response:
+                        payload = json.loads(response.read())
+                self.assertTrue(payload["success"])
+                self.assertTrue(payload["read_only"])
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[:2], ("设计1kHz RC低通", str(root / "run")))
+                self.assertFalse(run.call_args.kwargs["execute"])
             finally:
                 server.shutdown()
                 thread.join(timeout=3)
@@ -958,6 +1025,9 @@ class WorkbenchApiTest(unittest.TestCase):
                 with self.assertRaises(HTTPError) as context:
                     urlopen(invalid_request, timeout=3)
                 self.assertEqual(context.exception.code, 422)
+                error_payload = json.loads(context.exception.read())
+                self.assertEqual(error_payload["error"]["code"], "invalid_input")
+                self.assertEqual(error_payload["error"]["command"], "/api/provider-probe")
             finally:
                 server.shutdown()
                 thread.join(timeout=3)
@@ -1209,6 +1279,62 @@ class WorkbenchApiTest(unittest.TestCase):
                     self.assertEqual(detail["job"]["job_id"], job_id)
                     self.assertFalse(detail["job"]["has_result"])
                     self.assertNotIn("spec", json.dumps(detail, ensure_ascii=False))
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=3)
+                    server.server_close()
+
+    def test_streams_bounded_durable_job_events_over_sse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            job_dir = root / "jobs"
+            manager = ExperimentJobManager(state_dir=job_dir, start=False)
+            submitted = manager.submit(
+                {
+                    "job_kind": "experiment",
+                    "title": "sse fixture secret",
+                    "output_dir": str(root / "run-output"),
+                }
+            )
+            job_id = submitted["job_id"]
+            with patch.dict("os.environ", {"MULTISIM_MCP_JOB_DIR": str(job_dir)}):
+                server = create_workbench_server(str(root), port=0)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f"http://127.0.0.1:{server.server_port}"
+                    with urlopen(
+                        f"{base}/api/jobs/{job_id}/events?once=1&timeout=1",
+                        timeout=3,
+                    ) as response:
+                        body = response.read().decode("utf-8")
+                        self.assertEqual(
+                            response.headers.get("Content-Type"),
+                            "text/event-stream; charset=utf-8",
+                        )
+                    self.assertIn("event: task_event\n", body)
+                    data_line = next(
+                        line for line in body.splitlines() if line.startswith("data: ")
+                    )
+                    event = json.loads(data_line[6:])
+                    self.assertEqual(event["schema_version"], 1)
+                    self.assertEqual(event["job_id"], job_id)
+                    self.assertEqual(event["state"], "queued")
+                    self.assertRegex(event["event_id"], r"^[0-9a-f]{24}$")
+                    self.assertNotIn("sse fixture secret", body)
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(
+                            f"{base}/api/jobs/{job_id}/events?timeout=30.1",
+                            timeout=3,
+                        )
+                    error_payload = json.loads(raised.exception.read())
+                    self.assertEqual(raised.exception.code, 422)
+                    self.assertEqual(error_payload["error"]["code"], "invalid_input")
+                    self.assertEqual(
+                        error_payload["error"]["command"],
+                        f"/api/jobs/{job_id}/events",
+                    )
                 finally:
                     server.shutdown()
                     thread.join(timeout=3)

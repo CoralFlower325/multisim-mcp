@@ -7,6 +7,8 @@ MCP 工具，而是把已经验证的 Multisim 实验能力发展为可诊断、
 ## 产品决策
 
 - MCP 在 2.0 之前继续作为主要交付接口。
+- 产品定位为“AI 工程电路控制台”：模型负责提出与解释，产品负责约束、执行、测量、
+  判定、留证和回滚；标准流程和极简界面原则见 [`产品愿景`](PRODUCT_VISION.md)。
 - 从 1.1 开始，领域模型、任务、优化和报告不得依赖 MCP 上下文。
 - Multisim 作为第一个 `EdaBackend`，不再充当通用数据模型。
 - 纠错与参数优化优先于大规模 EDA 扩展和完整 GUI。
@@ -123,6 +125,12 @@ AI client / Visual Workbench
 - [x] 对已注册 Multisim/ngspice 实验执行信号对齐、容差化数值差分；
 - [x] 记录 SPICE 方言、模型和求解器差异，而不是静默改写；
 - [x] 将公共 CI 从 introspection-only 扩展到真实 ngspice 后端与完整实验回归；
+- [x] 强化标准纠错基准的真实验收证据：记录用例/套件耗时和通过率，并在全失败时
+  仍生成 `validation.json` 与可验证目录清单；
+- [x] 建立稳定 Agent API 契约：版本化 capabilities、统一错误码与可重试标记，
+  durable job 公开 `task_event` 状态快照，并为 Workbench 提供只读
+  `/api/capabilities` 能力握手以及有界 `/api/jobs/{job_id}/events` SSE 事件流；保持
+  既有 MCP 工具/资源数量和持久化 schema 兼容；
 - [ ] 按来源、许可证和 SHA-256 管理用户模型。
 
 阶段门禁：第二个后端无需改动优化器即可完成生成、仿真、测量和验证；
