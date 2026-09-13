@@ -164,6 +164,21 @@ class WorkerProcessTest(unittest.TestCase):
         finally:
             worker.close()
 
+    def test_worker_stdio_uses_utf8_regardless_of_locale(self) -> None:
+        """The client sends the JSON protocol as UTF-8, so the worker must
+        decode stdin as UTF-8 too. On a CJK-locale Windows host the ANSI code
+        page otherwise mangles non-ASCII paths (e.g. 作业1 → 浣滀笟1) and codec
+        calls fail with ENOENT even though the files exist."""
+        worker = self._worker()
+        try:
+            ping = worker.call("system", "ping")
+            self.assertEqual(
+                ping["stdio_encoding"].lower().replace("-", "").replace("_", ""),
+                "utf8",
+            )
+        finally:
+            worker.close()
+
     def test_remote_allowlist_error_is_preserved(self) -> None:
         worker = self._worker()
         try:

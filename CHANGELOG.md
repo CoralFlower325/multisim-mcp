@@ -6,11 +6,20 @@
 
 ### 中文
 
-- 暂无。
+- 修复 COM worker 在中文（CJK 区域设置）Windows 上的路径损坏问题：客户端按 UTF-8
+  写 JSON 协议，但 worker 进程此前按系统 ANSI 代码页解码自己的 stdin，导致任何
+  非 ASCII 路径（如中文目录名）在 worker 侧变成乱码，编解码调用以 ENOENT 失败且
+  错误信息看似路径正常。现在启动 worker 时强制 `PYTHONUTF8=1`，`system/ping`
+  诊断新增 `stdio_encoding` 字段，并附回归测试。
 
 ### English
 
-- No changes yet.
+- Fix COM worker path corruption on CJK-locale Windows: the client speaks
+  UTF-8 over the JSON protocol, but the worker previously decoded its own
+  stdin with the system ANSI code page, mangling every non-ASCII path before
+  codec execution (failing with ENOENT while the error text looked normal).
+  The worker is now spawned with `PYTHONUTF8=1`; `system/ping` diagnostics
+  gained a `stdio_encoding` field, covered by a regression test.
 
 ## [1.2.0] - 2026-09-01
 
