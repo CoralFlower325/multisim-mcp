@@ -25,6 +25,7 @@ LIMITATIONS = [
     "Geometry preflight checks pins and symbol bodies; wire crossings and label placement still need visual review.",
 ]
 VENDOR_LIMITATIONS = [
+    "Diodes require the licensed local 1N4001GP model; no replacement with another diode identity is permitted.",
     "LM324AJ uses a licensed local LM158_4 macromodel, section A of each separate package; other vendor models are not certified.",
     "2N3904 QNPN uses the licensed local BJT model; measured circuit acceptance does not certify arbitrary transistor circuits.",
     "Vendor results are checked against declared native measurements; no independent ideal-model equivalence is claimed.",
@@ -41,7 +42,7 @@ def vendor_model_fingerprints(path: Path, parts: list[Any]) -> dict[str, Any]:
     """Compare saved native model identities and bodies without publishing them."""
     from .native_xml import parse_native_xml
     root = parse_native_xml(path).getroot()
-    wanted = {p.refdes: p.kind for p in parts if p.kind in {"LM324AJ", "QNPN"}}
+    wanted = {p.refdes: p.kind for p in parts if p.kind in {"LM324AJ", "QNPN", "D"}}
     models = {item.get("CiID"): item.find("CiModel") for item in root.iter("Item") if item.find("CiModel") is not None}
     found = {}
     for component in root.iter("CiComponent"):
@@ -51,14 +52,16 @@ def vendor_model_fingerprints(path: Path, parts: list[Any]) -> dict[str, Any]:
         primary = component.find("./Attributes/Item/CiaCollString/strings")
         values = [item.get("Value", "").removeprefix("&ASC") for item in primary] if primary is not None else []
         model = models.get(component.get("Model"))
-        if wanted[ref] == "QNPN":
-            if ref in found or len(values) < 6 or values[1:4] != ["2N3904", "BJT_NPN", "2N3904"] or model is None:
-                raise ValueError("native 2N3904 identity or linked model missing/changed")
+        if wanted[ref] in {"QNPN", "D"}:
+            identity = ["2N3904", "BJT_NPN", "2N3904"] if wanted[ref] == "QNPN" else ["1N4001GP", "DIODE", "D1N4001GP"]
+            model_type = "NPN" if wanted[ref] == "QNPN" else "D"
+            if ref in found or len(values) < 6 or values[1:4] != identity or model is None:
+                raise ValueError("native semiconductor identity or linked model missing/changed")
             body = values[5]
             linked = [e.get("String", "").removeprefix("&ASC") for e in model.iter("CiaCString") if re.match(r"(?i)^&ASC\.model\s", e.get("String", ""))]
             expression = component.find("./Attributes/Item/CiaSpiceTmpltExprt")
-            if not re.match(r"(?is)^\.model\s+2N3904\s+NPN\s*\(.+\)\s*$", body) or not linked or expression is None:
-                raise ValueError("native 2N3904 model definition or expression missing")
+            if not re.match(r"(?is)^\.model\s+" + identity[2] + r"\s+" + model_type + r"\s*\(.+\)\s*$", body) or not linked or expression is None:
+                raise ValueError("native semiconductor model definition or expression missing")
             digest = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
             found[ref] = {"database_identity": values[1], "model_name": values[3], "definition_sha256": digest(body),
                           "linked_definition_sha256": [digest(b) for b in linked],
@@ -88,7 +91,7 @@ def validate_proposal(proposal: Mapping[str, Any]) -> tuple[dict[str, Any], list
     if not isinstance(proposal, Mapping) or set(proposal)-allowed:
         raise ValueError("unknown generated analog proposal fields")
     parts = validated_components(proposal.get("netlist"), allow_vendor=True)
-    vendor = any(p.kind in {"LM324AJ", "QNPN"} for p in parts)
+    vendor = any(p.kind in {"LM324AJ", "QNPN", "D"} for p in parts)
     if not vendor:
         parts = validated_components(proposal.get("netlist"))
     for field in ("title", "application"):
@@ -134,8 +137,8 @@ def validate_proposal(proposal: Mapping[str, Any]) -> tuple[dict[str, Any], list
             raise ValueError("reference_net must be a probed net")
         if check.get("subtract_net") is not None and (check["subtract_net"] not in nets or check.get("reference_net") is not None):
             raise ValueError("subtract_net must be probed and cannot combine with reference_net")
-        if quantity not in ({"value"} if kind in {"op", "tran"} else {"magnitude","phase_deg"}):
-            raise ValueError("OP/TRAN support value; AC supports magnitude or phase_deg")
+        if quantity not in ({"value", "mean", "ripple_vpp", "rms"} if kind == "tran" else {"value"} if kind == "op" else {"magnitude","phase_deg"}):
+            raise ValueError("OP supports value; TRAN value/mean/ripple_vpp/rms; AC magnitude/phase_deg")
         if kind != "tran" and ("time_min_s" in check or "time_max_s" in check):
             raise ValueError("time constraints require a transient check")
         for key in ("min","max"):
@@ -160,8 +163,9 @@ def validate_proposal(proposal: Mapping[str, Any]) -> tuple[dict[str, Any], list
                     raise ValueError("transient checks require finite time_min_s and time_max_s")
             if not 0 <= check["time_min_s"] < check["time_max_s"] <= ranges[kind][1]:
                 raise ValueError("transient window must have positive width inside the requested duration")
-    if vendor and (not {"op", "ac"}.issubset(kinds) or {c["analysis"] for c in checks} != kinds):
-        raise ValueError("vendor models require OP and AC plus explicit checks for every requested analysis")
+    required = {"op", "tran"} if any(p.kind == "D" for p in parts) else {"op", "ac"}
+    if vendor and (not required.issubset(kinds) or {c["analysis"] for c in checks} != kinds):
+        raise ValueError("vendor models require OP and AC (OP and TRAN for diodes) plus explicit checks for every requested analysis")
     # Structural singularities are rejected before a native worker is started.
     if not vendor:
         solve_linear(parts)
@@ -171,10 +175,34 @@ def validate_proposal(proposal: Mapping[str, Any]) -> tuple[dict[str, Any], list
     return result,parts
 
 
+def transient_statistic(points: list[tuple[float, float]], start: float, stop: float, quantity: str) -> dict[str, Any]:
+    """Integrate raw samples with interpolated window boundaries; reject sparse/truncated evidence."""
+    if len(points) < 3 or any(not math.isfinite(t) or not math.isfinite(v) for t,v in points):
+        raise ValueError("transient statistic requires finite raw samples")
+    if any(b[0] <= a[0] for a,b in zip(points, points[1:])):
+        raise ValueError("transient time axis must increase strictly")
+    if points[0][0] > start or points[-1][0] < stop - 1e-10:
+        raise ValueError("transient samples do not cover the requested window")
+    def boundary(time: float) -> tuple[float, float]:
+        for a,b in zip(points, points[1:]):
+            if a[0] <= time <= b[0] + 1e-10:
+                weight = min(1., (time-a[0])/(b[0]-a[0]))
+                return time, a[1] + weight*(b[1]-a[1])
+        raise ValueError("missing transient boundary")
+    window = [boundary(start), *[(t,v) for t,v in points if start < t < stop], boundary(stop)]
+    if len(window) < 21 or max(b[0]-a[0] for a,b in zip(window,window[1:])) > (stop-start)/20 * (1+1e-9):
+        raise ValueError("transient statistic has insufficient time resolution")
+    lo,hi = min(v for _,v in window),max(v for _,v in window)
+    mean = sum((b[0]-a[0])*(a[1]+b[1])/2 for a,b in zip(window,window[1:]))/(stop-start)
+    square = sum((b[0]-a[0])*(a[1]**2+a[1]*b[1]+b[1]**2)/3 for a,b in zip(window,window[1:]))/(stop-start)
+    measured = {"mean":mean,"ripple_vpp":hi-lo,"rms":math.sqrt(max(0.,square))}[quantity]
+    return {"measured_value":measured,"waveform_min":lo,"waveform_max":hi,"window_start_s":start,"window_stop_s":stop,"samples":len(window)}
+
+
 def evaluate_evidence(root: Path, proposal: dict[str, Any], parts: list[Any]) -> dict[str, Any]:
     channels = dict(zip(proposal["probe_nets"], proposal["experiments"][0]["outputs"]))
     measurements, comparisons = {}, []
-    reference_applicable = not any(p.kind in {"LM324AJ", "QNPN"} for p in parts)
+    reference_applicable = not any(p.kind in {"LM324AJ", "QNPN", "D"} for p in parts)
     for index, experiment in enumerate(proposal["experiments"],1):
         kind = experiment["type"]
         with (root/f"analysis-{index:03d}"/"data.csv").open(encoding="utf-8",newline="") as stream:
@@ -201,10 +229,12 @@ def evaluate_evidence(root: Path, proposal: dict[str, Any], parts: list[Any]) ->
     checks = []
     for requirement in proposal["checks"]:
         values = []
+        aggregate = requirement["analysis"] == "tran" and requirement["quantity"] in {"mean", "ripple_vpp", "rms"}
+        points = []
         for frequency,voltages in measurements[requirement["analysis"]]:
             if frequency is not None:
                 low,high = ("time_min_s","time_max_s") if requirement["analysis"] == "tran" else ("frequency_min_hz","frequency_max_hz")
-                if not requirement[low]*(1-1e-9)<=frequency<=requirement[high]*(1+1e-9):
+                if not aggregate and not requirement[low]*(1-1e-9)<=frequency<=requirement[high]*(1+1e-9):
                     continue
             value = voltages[requirement["net"]]
             if requirement.get("subtract_net"):
@@ -214,10 +244,17 @@ def evaluate_evidence(root: Path, proposal: dict[str, Any], parts: list[Any]) ->
                 if abs(denominator)<1e-15:
                     raise ValueError("acceptance ratio has zero reference voltage")
                 value /= denominator
+            if aggregate:
+                points.append((frequency, value.real))
+                continue
             measured = value.real if requirement["quantity"]=="value" else abs(value) if requirement["quantity"]=="magnitude" else math.degrees(math.atan2(value.imag,value.real))
             if requirement["quantity"] == "phase_deg":
                 measured = (measured + 180) % 360 - 180
             values.append(measured)
+        if aggregate:
+            statistic = transient_statistic(points,requirement["time_min_s"],requirement["time_max_s"],requirement["quantity"])
+            checks.append({"requirement":requirement,**statistic,"passed":requirement["min"]<=statistic["measured_value"]<=requirement["max"]})
+            continue
         checks.append({"requirement":requirement,"samples":len(values),
                        "measured_min":min(values) if values else None,"measured_max":max(values) if values else None,
                        "passed":bool(values) and all(requirement["min"]<=v<=requirement["max"] for v in values)})
@@ -265,7 +302,7 @@ def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, ex
             raise RuntimeError(str(native.get("error")))
         if (root/"native"/"schematic.png").read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
             raise RuntimeError("native schematic export does not contain PNG data")
-        vendor = any(p.kind in {"LM324AJ", "QNPN"} for p in parts)
+        vendor = any(p.kind in {"LM324AJ", "QNPN", "D"} for p in parts)
         if vendor:
             decoded = Ms14Codec().decode(str(root/"native"/"circuit.ms14"), str(root/"native-model.xml"))
             before = vendor_model_fingerprints(root/"source.xml", parts)
@@ -279,7 +316,7 @@ def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, ex
         topology = [json.loads((root/"native"/f"analysis-{i:03d}"/"topology.json").read_text(encoding="utf-8")) for i in range(1,len(plan["experiments"])+1)]
         result["topology_acceptance"] = {"ok":all(t["ok"] for t in topology),"analyses":topology}
         result["measurement_acceptance"] = acceptance
-        result["success"] = (acceptance["reference_passed"] if acceptance["reference_applicable"] else result["model_acceptance"]["ok"]) and (acceptance["requirements_verified"] or not plan["checks"])
+        result["success"] = result["topology_acceptance"]["ok"] and (acceptance["reference_passed"] if acceptance["reference_applicable"] else result["model_acceptance"]["ok"]) and (acceptance["requirements_verified"] or not plan["checks"])
         result["verification_status"] = ("passed-declared-sampled-requirements" if acceptance["requirements_verified"] else "passed-linear-reference-only") if result["success"] else "target-not-met"
         result["verification_method"] = plan["verification_method"]
     except Exception as exc:
