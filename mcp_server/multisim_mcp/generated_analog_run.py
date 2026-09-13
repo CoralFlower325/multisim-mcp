@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
@@ -263,8 +264,30 @@ def evaluate_evidence(root: Path, proposal: dict[str, Any], parts: list[Any]) ->
             "requirements_verified":bool(checks) and all(c["passed"] for c in checks),"checks":checks}
 
 
-def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, execute: bool=False) -> dict[str, Any]:
+def _analyze_saved_values(client: Any, action: Mapping[str, Any], output: Path, *, parts: list[Any]) -> dict:
+    from .linear_reference import scalar
+    values={p.refdes:float(client.get_rlc_value(p.refdes)['value']) for p in parts if p.kind in {'R','C','L'}}
+    if any(not math.isclose(values[p.refdes],scalar(p.value),rel_tol=1e-9,abs_tol=1e-12) for p in parts if p.refdes in values):
+        raise RuntimeError('native RLC readback differs from declared values')
+    result=analyze_current_project(client,action,output,expected_pins=expected_native_pins(parts))
+    _write(output/'native-parameters.json',values)
+    return result
+
+
+def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, execute: bool=False,
+                                native_source: str | None = None,
+                                native_parameters: Mapping[str, Any] | None = None) -> dict[str, Any]:
     plan,parts = validate_proposal(proposal)
+    if native_parameters:
+        from .linear_reference import scalar
+        by_ref = {p.refdes:p for p in parts}
+        if native_source is None or any(ref not in by_ref or by_ref[ref].kind not in {'R','C','L'}
+                or not math.isclose(scalar(str(value)),scalar(by_ref[ref].value),rel_tol=1e-12)
+                for ref,value in native_parameters.items()):
+            raise ValueError('native parameter changes must match the declared passive component values')
+    source = Path(native_source).expanduser().resolve() if native_source is not None else None
+    if source is not None and (not source.is_file() or source.suffix.lower() != '.ms14'):
+        raise ValueError('native_source must be an existing .ms14 file')
     root = Path(output).expanduser().resolve()
     if root.exists() or root==Path(root.anchor):
         raise FileExistsError("output must be a new directory")
@@ -277,24 +300,34 @@ def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, ex
     (root/"input.cir").write_text(plan["netlist"],encoding="utf-8")
     result.update(success=False,mode="execute",stage="build",verification_status="failed")
     try:
-        build = build_schematic(plan["netlist"],root/"source.xml",probe_nets=plan["probe_nets"])
-        _write(root/"build.json",build)
-        if build["unsupported"] or build["layout_validation"]["status"]!="pass":
-            raise RuntimeError("generated circuit failed geometry preflight")
-        if len(build["probes"]) != len(plan["probe_nets"]):
-            raise RuntimeError("not every requested net has a drawable probe")
+        if source is None:
+            build = build_schematic(plan["netlist"],root/"source.xml",probe_nets=plan["probe_nets"])
+            _write(root/"build.json",build)
+            if build["unsupported"] or build["layout_validation"]["status"]!="pass":
+                raise RuntimeError("generated circuit failed geometry preflight")
+            if len(build["probes"]) != len(plan["probe_nets"]):
+                raise RuntimeError("not every requested net has a drawable probe")
         from .multisim_client import Ms14Codec
         from .component_compat import detect_multisim_version
         version = detect_multisim_version()
         result["multisim_version"] = version
         if not re.match(r"^14\.3(?:\.|$)", version):
             raise RuntimeError("this workflow's native pin/model acceptance is currently verified only on Multisim 14.3")
-        Ms14Codec().encode(str(root/"source.xml"),str(root/"source.ms14"))
+        if source is None:
+            Ms14Codec().encode(str(root/"source.xml"),str(root/"source.ms14"))
+        else:
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            shutil.copyfile(source,root/'source.ms14')
+            if hashlib.sha256((root/'source.ms14').read_bytes()).hexdigest() != digest:
+                raise RuntimeError('native source changed while copying')
+            Ms14Codec().decode(str(root/'source.ms14'),str(root/'source.xml'))
+            result['reopened_source'] = {'path':str(source),'sha256':digest,'parameter_changes':dict(native_parameters or {})}
         request = {"schema_version":1,"title":plan["title"],"application":plan["application"],
                    "boards":[{"id":"main","role":"primary"}],"experiments":plan["experiments"]}
         result["stage"] = "native-analysis"
         native = run_native_project(request,str(root/"source.ms14"),str(root/"native"),execute=True,
-                    analyzer=partial(analyze_current_project,expected_pins=expected_native_pins(parts)))
+                    parameters=native_parameters,
+                    analyzer=partial(_analyze_saved_values,parts=parts) if source is not None else partial(analyze_current_project,expected_pins=expected_native_pins(parts)))
         result["native_execution"] = native
         result["simulation_started"] = native.get("simulation_started")
         result["native_project"] = str(root/"native"/"circuit.ms14")
@@ -319,7 +352,13 @@ def run_generated_analog_project(proposal: Mapping[str, Any], output: str, *, ex
         result["success"] = result["topology_acceptance"]["ok"] and (acceptance["reference_passed"] if acceptance["reference_applicable"] else result["model_acceptance"]["ok"]) and (acceptance["requirements_verified"] or not plan["checks"])
         result["verification_status"] = ("passed-declared-sampled-requirements" if acceptance["requirements_verified"] else "passed-linear-reference-only") if result["success"] else "target-not-met"
         result["verification_method"] = plan["verification_method"]
+        if source is not None:
+            result['reopened_source']['unchanged'] = hashlib.sha256(source.read_bytes()).hexdigest() == digest
+            if not result['reopened_source']['unchanged']:
+                raise RuntimeError('native source changed during verification')
     except Exception as exc:
+        result['success'] = False
+        result['verification_status'] = 'failed'
         result["error"] = {"type":type(exc).__name__,"message":str(exc)}
     summary = html.escape(json.dumps({k:result.get(k) for k in ("success","verification_status","measurement_acceptance","error")},ensure_ascii=False,indent=2))
     (root/"report.html").write_text('<!doctype html><html lang="zh"><meta charset="utf-8"><title>'+html.escape(plan["title"])+

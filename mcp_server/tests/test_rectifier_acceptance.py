@@ -153,3 +153,17 @@ class RectifierNativeCarrierTest(unittest.TestCase):
         c.set('Model','missing');write_native_xml(tree,self.path)
         with self.assertRaises(ValueError):
             vendor_model_fingerprints(self.path,parts)
+
+    def test_native_effective_value_resolves_stale_cache_but_not_wrong_parameter(self):
+        tree=parse_native_xml(self.path)
+        c=next(c for c in tree.getroot().iter('CiComponent') if c.get('LocalName')=='&ASCC1')
+        c.findall('.//CiaParamList/doubles/Item')[1].set('Value','0.0047')
+        write_native_xml(tree,self.path)
+        values={'C1':self.plan['derived']['capacitance_f'],'RLOAD':self.plan['derived']['load_resistance_ohm']}
+        self.assertFalse(verify_rectifier_presentation(self.path,self.plan)['ok'])
+        effective=verify_rectifier_presentation(self.path,self.plan,values)
+        self.assertTrue(effective['ok']);self.assertIn('C1',effective['cached_double_differences'])
+        self.assertFalse(verify_rectifier_presentation(self.path,self.plan,dict(values,C1=.0047))['ok'])
+        c.findall('.//CiaParamList/parameters/Item')[1].set('Value','&ASC4.7m')
+        write_native_xml(tree,self.path)
+        self.assertFalse(verify_rectifier_presentation(self.path,self.plan,values)['ok'])

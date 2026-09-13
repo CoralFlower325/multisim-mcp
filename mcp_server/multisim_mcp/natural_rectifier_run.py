@@ -12,11 +12,12 @@ from .native_xml import parse_native_xml
 from .natural_rectifier import parse_natural_rectifier, validate_rectifier_netlist
 
 
-def verify_rectifier_presentation(path: Path, plan: dict) -> dict:
+def verify_rectifier_presentation(path: Path, plan: dict, native_values: dict | None = None) -> dict:
     root = parse_native_xml(path).getroot()
     components = {c.get('LocalName','').removeprefix('&ASC'):c for c in root.iter('CiComponent')}
     derived = plan['derived']
     checks = {}
+    cache_differences = {}
     expected = {'V1':{1:derived['ac_peak_v'],3:0.,5:derived['frequency_hz'],7:0.,9:0.,11:0.},
                 'RLOAD':{1:derived['load_resistance_ohm']}, 'C1':{1:derived['capacitance_f']}}
     for ref,parameters in expected.items():
@@ -24,6 +25,14 @@ def verify_rectifier_presentation(path: Path, plan: dict) -> dict:
         values = component.findall('.//CiaParamList/doubles/Item') if component is not None else []
         checks[ref] = all(index<len(values) and math.isclose(float(values[index].get('Value')),value,rel_tol=1e-9,abs_tol=1e-12)
                           for index,value in parameters.items())
+        if ref in {'RLOAD','C1'} and native_values is not None:
+            from .linear_reference import scalar
+            strings=component.findall('.//CiaParamList/parameters/Item') if component is not None else []
+            expected_value=parameters[1]
+            if not checks[ref]:
+                cache_differences[ref]={'cached_double':float(values[1].get('Value')) if len(values)>1 else None,'expected':expected_value}
+            checks[ref] = (ref in native_values and math.isclose(native_values[ref],expected_value,rel_tol=1e-9,abs_tol=1e-12)
+                           and len(strings)>1 and math.isclose(scalar(strings[1].get('Value','').removeprefix('&ASC')),expected_value,rel_tol=1e-9,abs_tol=1e-12))
     source = components.get('V1')
     names = source.findall('./Attributes/Item/CiaCollString/strings/Item') if source is not None else []
     checks['source_identity'] = len(names)>1 and names[1].get('Value') == '&ASCAC_VOLTAGE'
@@ -31,7 +40,8 @@ def verify_rectifier_presentation(path: Path, plan: dict) -> dict:
     checks['source_expression'] = expression is not None and expression.get('String') == '&ASCv%p %t1 %t2 dc #3 sin(#3 #1 #5 #7 #9 #11)'
     probes = list(root.iter('CIITProbeExtComponent'))
     checks['probe_panels_hidden'] = len(probes)==len(plan['proposal']['probe_nets']) and all(p.get('Hidden')=='1' and p.get('ShowInfo')=='0' for p in probes)
-    return {'ok':all(checks.values()),'checks':checks,'scope':'saved native parameter tables, sine expression and probe visibility; visual review is separate'}
+    return {'ok':all(checks.values()),'checks':checks,'cached_double_differences':cache_differences,
+            'scope':'saved native parameter strings plus native RLCValue readback when available; otherwise strict cached doubles; sine and probe checks; visual review is separate'}
 
 
 def rectifier_measurements(result: dict, plan: dict) -> dict:
@@ -94,16 +104,29 @@ def export_rectifier_summary(root: Path, result: dict, plan: dict) -> str:
 
 def run_natural_rectifier(text: str, output: str, *, execute: bool = False) -> dict:
     plan = parse_natural_rectifier(text)
+    return run_rectifier_plan(plan,output,execute=execute)
+
+
+def run_rectifier_plan(plan: dict, output: str, *, execute: bool = False,
+                       native_source: str | None = None, native_parameters: dict | None = None) -> dict:
     validate_rectifier_netlist(plan)
-    result = run_generated_analog_project(plan['proposal'],output,execute=execute)
+    options = {} if native_source is None else {'native_source':native_source,'native_parameters':native_parameters}
+    result = run_generated_analog_project(plan['proposal'],output,execute=execute,**options)
     result['natural_language_plan'] = plan
     if not execute:
         return result
     root = Path(result['output_dir'])
     summary = ''
-    if result['success']:
+    if (result.get('measurement_acceptance') or {}).get('checks') or result['success']:
         try:
-            result['presentation_acceptance'] = verify_rectifier_presentation(root/'native-model.xml',plan)
+            values=None
+            if native_source is not None:
+                readings=[json.loads((root/'native'/f'analysis-{i:03d}'/'native-parameters.json').read_text(encoding='utf-8')) for i in (1,2)]
+                if readings[0] != readings[1]:
+                    raise ValueError('native RLC values changed between analyses')
+                values=readings[0]
+                result['native_parameter_readback']=values
+            result['presentation_acceptance'] = verify_rectifier_presentation(root/'native-model.xml',plan,values)
             result['rectifier_acceptance'] = rectifier_measurements(result,plan)
             result['waveform_acceptance'] = verify_rectifier_waveform(root/'native'/'analysis-002'/'data.csv',plan)
             summary = export_rectifier_summary(root,result,plan)

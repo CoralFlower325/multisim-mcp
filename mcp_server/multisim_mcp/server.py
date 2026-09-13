@@ -2618,6 +2618,18 @@ def run_natural_rectifier(text: str, output_dir: str, execute: bool = False) -> 
 
 
 @mcp.tool()
+def optimize_natural_rectifier(text: str, output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Minimize bridge capacitance by native experiments, tolerance cases and saved-file replay.
+
+    Preview discloses nine discrete candidates and fixed input/load/capacitance cases.
+    Execution may take several minutes. Keeps every failed candidate, checks startup,
+    reopens the selected saved circuit and exports comparison reports. No physical certification.
+    """
+    from multisim_mcp.rectifier_optimization import optimize_natural_rectifier as run
+    return run(text,output_dir,execute=execute)
+
+
+@mcp.tool()
 def create_schematic_from_netlist(
     netlist: str,
     output_ms14: str,

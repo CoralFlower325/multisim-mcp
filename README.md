@@ -34,6 +34,11 @@ OP/AC、完整电路图和报告导出。已在 Multisim 14.3 实测两级（14 
 已完成默认工况、4V/5mA、18V/60Hz/200mA 和更严格纹波工况的本机实测。
 此新增能力尚未进入 `1.3.0rc1` 发布包，不包含稳压电源或实物设计认证。
 
+进一步新增 [原生整流电容优化闭环](docs/RECTIFIER_OPTIMIZATION.md)：
+`optimize_natural_rectifier` 固定负载比较九个电容候选，检查输入/负载/电容变化及启动，
+选定通过全部声明工况的最小候选，重开保存工程复验并导出对比报告。
+12V/100mA/纹波≤0.3V 的本机测试完成 27 次原生运行，将电容从4700μF降至3900μF。
+
 > `v1.2.0` 是**不含 React 前端的 MCP Core 正式版**：包含 Python MCP 服务、CLI、EDA
 > 核心、模型/DeepSeek 适配、测试、文档及可选 loopback 桥接 API；不包含仍在独立
 > 开发的 React Workbench 前端。GitHub、PyPI 与 MCP Registry 均已发布 `v1.2.0`。

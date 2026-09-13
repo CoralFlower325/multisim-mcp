@@ -14,6 +14,7 @@ def parse_natural_rectifier(text: str) -> dict[str, Any]:
     if re.search(r"开关|switching|逆变|inverter|三相|three[- ]phase|半波|half.wave|稳压|regulated|恒流|constant.current|市电|mains|变压器|transformer|输出\s*\d|output\s*\d|Vpk|峰值|peak|负\d", text, re.I):
         raise ValueError("当前只支持隔离低压交流输入、桥式整流和电阻负载；不支持稳压/恒流/变压器设计或峰值输入")
     remaining = text
+    remaining = re.sub(r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:mA|A))\s*负载',r'负载\1',remaining,flags=re.I)
     number = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
     def extract(pattern: str, default: float | None, scale: float = 1.) -> float | None:
         nonlocal remaining
