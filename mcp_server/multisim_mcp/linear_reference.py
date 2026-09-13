@@ -57,7 +57,7 @@ def validated_components(netlist: str, *, allow_vendor: bool = False) -> list[An
     for p in parts:
         if p.parameters:
             raise ValueError(f"{p.refdes}: extra component parameters are outside the ideal linear contract")
-        if p.kind not in ({"R", "C", "L", "V", "OPAMP5", "LM324AJ", "QNPN"} if allow_vendor else {"R", "C", "L", "V", "OPAMP5"}):
+        if p.kind not in ({"R", "C", "L", "V", "OPAMP5", "LM324AJ", "QNPN", "D"} if allow_vendor else {"R", "C", "L", "V", "OPAMP5"}):
             raise ValueError(f"{p.refdes}: {p.kind} has no native linear-reference acceptance yet")
         if p.kind in {"R", "C", "L"} and scalar(p.value) <= 0:
             raise ValueError("passive component values must be positive")
@@ -65,6 +65,8 @@ def validated_components(netlist: str, *, allow_vendor: bool = False) -> list[An
             validate_native_source(p) if allow_vendor else source_values(p)
         if p.kind == "QNPN" and (p.model.upper() != "2N3904" or p.model_definition):
             raise ValueError("QNPN requires the unmodified local 2N3904 vendor model")
+        if p.kind == "D" and (p.model.upper() != "1N4001GP" or p.model_definition):
+            raise ValueError("D requires the unmodified local 1N4001GP vendor model")
         if p.kind == "OPAMP5" and p.model.upper() not in {"OPAMP5", "IDEALOPAMP"}:
             raise ValueError("vendor opamp names must not be silently replaced with an ideal model")
     return parts
@@ -73,6 +75,12 @@ def validated_components(netlist: str, *, allow_vendor: bool = False) -> list[An
 def validate_native_source(spec: Any) -> None:
     """Bounded DC/AC source with optional seven-parameter transient pulse."""
     expression = spec.model or f"DC {spec.value}"
+    sine = re.fullmatch(r"(?i)DC\s+(\S+)\s+SIN\s*\(([^()]*)\)", expression)
+    if sine:
+        values = [scalar(v) for v in sine[2].split()]
+        if len(values) != 3 or values[1] <= 0 or values[2] <= 0 or scalar(sine[1]) != values[0]:
+            raise ValueError("SIN requires offset, positive peak amplitude and frequency; DC must equal offset")
+        return
     pulse = re.search(r"(?i)\bPULSE\s*\(([^()]*)\)\s*$", expression)
     if not pulse:
         source_values(spec)
@@ -96,6 +104,8 @@ def expected_native_pins(parts: list[Any]) -> dict[str, dict[int | str, str]]:
             pins = voltage_pin_order(p)
         if p.kind == "QNPN":
             pins = ["C", "B", "E"]
+        if p.kind == "D":
+            pins = ["A", "K"]
         result[p.refdes + ("A" if p.kind == "LM324AJ" else "")] = dict(zip(pins, p.nodes))
     return result
 

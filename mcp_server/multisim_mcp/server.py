@@ -2599,6 +2599,25 @@ def run_natural_common_emitter(text: str, output_dir: str, execute: bool = False
 
 
 @mcp.tool()
+def plan_natural_rectifier(text: str) -> dict[str, Any]:
+    """Plan a 4–18 Vrms, 50/60 Hz 1N4001GP bridge with a 5–200 mA resistive load."""
+    from multisim_mcp.natural_rectifier import parse_natural_rectifier
+    return parse_natural_rectifier(text)
+
+
+@mcp.tool()
+def run_natural_rectifier(text: str, output_dir: str, execute: bool = False) -> dict[str, Any]:
+    """Build a local native bridge, export its schematic/report and verify OP/transient evidence.
+
+    Requires licensed AC_VOLTAGE and full 1N4001GP carriers. Checks saved values,
+    diode models/pins, input RMS, DC mean, ripple, resistive load current and settling.
+    Preview by default. This bounded simulation does not certify a physical power supply.
+    """
+    from multisim_mcp.natural_rectifier_run import run_natural_rectifier as run
+    return run(text, output_dir, execute=execute)
+
+
+@mcp.tool()
 def create_schematic_from_netlist(
     netlist: str,
     output_ms14: str,

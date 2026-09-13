@@ -28,6 +28,12 @@ OP/AC、完整电路图和报告导出。已在 Multisim 14.3 实测两级（14 
 第二阶段预览版的准确变更、验证结果和发布边界见
 [`1.3.0rc1 发布说明`](docs/RELEASE_NOTES_v1.3.0rc1.md)。
 
+后续源码开发新增 [桥式整流原生插件工作流](docs/RECTIFIER_NATIVE_ACCEPTANCE.md)：
+`run_natural_rectifier` 从低压交流输入、负载电流和纹波要求生成 1N4001GP 桥式电路，
+核对原生模型、引脚及保存参数，运行 OP/TRAN 并导出图纸、波形与报告。
+已完成默认工况、4V/5mA、18V/60Hz/200mA 和更严格纹波工况的本机实测。
+此新增能力尚未进入 `1.3.0rc1` 发布包，不包含稳压电源或实物设计认证。
+
 > `v1.2.0` 是**不含 React 前端的 MCP Core 正式版**：包含 Python MCP 服务、CLI、EDA
 > 核心、模型/DeepSeek 适配、测试、文档及可选 loopback 桥接 API；不包含仍在独立
 > 开发的 React Workbench 前端。GitHub、PyPI 与 MCP Registry 均已发布 `v1.2.0`。
