@@ -2,9 +2,19 @@
 
 本项目遵循语义化版本的预发布形式。中文为主要说明，英文摘要紧随其后。
 
-## [Unreleased]
+## [1.3.0rc1] - 2026-09-13
 
 ### 中文
+
+- 发布自然语言及组合模拟电路的原生生成、仿真、测量验收和导出预览入口。
+- 将版本化组件映射纳入安装包，修复 COM-free 测试的外部环境依赖及 CI 工具数量检查。
+- 保留预览边界：新工程需图面复核，实际验证集中在 Multisim 14.3。
+
+- 修复 COM worker 在中文（CJK 区域设置）Windows 上的路径损坏问题：客户端按 UTF-8
+  写 JSON 协议，但 worker 进程此前按系统 ANSI 代码页解码自己的 stdin，导致任何
+  非 ASCII 路径（如中文目录名）在 worker 侧变成乱码，编解码调用以 ENOENT 失败且
+  错误信息看似路径正常。现在启动 worker 时强制 `PYTHONUTF8=1`，`system/ping`
+  诊断新增 `stdio_encoding` 字段，并附回归测试。
 
 - 1.3 开发：增强标准纠错基准套件的可审计性。每个用例和整个套件现在记录 UTC
   时间戳、耗时、通过率和统一验收判据；即使所有真实实验失败，也会保留
@@ -19,6 +29,13 @@
   软目标、偏好和假设，并拦截同一信号上的明显冲突。
 
 ### English
+
+- Fix COM worker path corruption on CJK-locale Windows: the client speaks
+  UTF-8 over the JSON protocol, but the worker previously decoded its own
+  stdin with the system ANSI code page, mangling every non-ASCII path before
+  codec execution (failing with ENOENT while the error text looked normal).
+  The worker is now spawned with `PYTHONUTF8=1`; `system/ping` diagnostics
+  gained a `stdio_encoding` field, covered by a regression test.
 
 - 1.3 development: hardened the standard correction benchmark suite. Per-case and
   suite-level UTC timestamps, durations, pass rate, and acceptance criteria are

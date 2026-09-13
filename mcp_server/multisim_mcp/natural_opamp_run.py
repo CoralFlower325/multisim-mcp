@@ -39,7 +39,7 @@ def run_natural_opamp_engineering(text: str, output: str, *, execute: bool = Fal
     (root / "input.txt").write_text(text, encoding="utf-8")
     try:
         multisim_version = detect_multisim_version()
-        manifest = load_manifest_for_version(Path(__file__).resolve().parents[2] / "compatibility", multisim_version)
+        manifest = load_manifest_for_version(Path(__file__).resolve().parent / "compatibility", multisim_version)
         result["multisim_version"] = multisim_version
         result["component_mappings"] = require_verified_mappings(
             manifest, multisim_version, {"ideal-opamp5": ["in+", "in-", "v+", "v-", "out"]})

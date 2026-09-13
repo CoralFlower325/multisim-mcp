@@ -8,6 +8,15 @@ from multisim_mcp.natural_engineering_run import run_natural_engineering
 
 
 class NaturalEngineeringTest(unittest.TestCase):
+    def setUp(self):
+        detected = patch('multisim_mcp.natural_engineering_run.detect_multisim_version', return_value='14.3')
+        detected.start()
+        self.addCleanup(detected.stop)
+        no_worker = patch('multisim_mcp.com_worker_client.MultisimWorkerProcess._start_locked',
+                          side_effect=AssertionError('unit tests must not activate COM'))
+        no_worker.start()
+        self.addCleanup(no_worker.stop)
+
     def test_rc_request_becomes_valid_plan_and_netlist(self):
         result = parse_natural_request("设计一个截止频率 1 kHz 的 RC 低通，R=1.5kΩ，C=100nF，输入 1 V")
         self.assertAlmostEqual(result["derived"]["target_cutoff_hz"], 1000)

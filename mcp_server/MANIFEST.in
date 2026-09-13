@@ -3,6 +3,7 @@ include README.md
 include pyproject.toml
 recursive-include multisim_mcp *.py
 include multisim_mcp/templates/manifest.json
+recursive-include multisim_mcp/compatibility *.json
 recursive-exclude multisim_mcp/templates *.xml
 recursive-include tests test_*.py
 global-exclude __pycache__

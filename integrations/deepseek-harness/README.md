@@ -1,3 +1,7 @@
+# 1.3.0-rc.1 preview update
+
+Install the candidate core with `python -m pip install multisim-mcp==1.3.0rc1`, then add `multisim-mcp-dsh-plugin@1.3.0-rc.1`. This adapter uses the configured Python MCP server; it does not bundle Python or Multisim. New capabilities remain limited to the documented validated circuit families.
+
 # Multisim MCP 的 DeepSeek Harness 插件
 
 这是一个可独立安装的 Harness bundle。它把 Multisim MCP 注册为

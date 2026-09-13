@@ -155,6 +155,12 @@ class MultisimWorkerProcess:
         creationflags = (
             getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         )
+        # The JSON protocol crosses this pipe as UTF-8 (encoding="utf-8" above
+        # only covers the client side). Without PYTHONUTF8 the worker decodes
+        # its own stdin with the ANSI code page, so on CJK-locale Windows any
+        # non-ASCII path arrives mangled and codec calls fail with ENOENT.
+        worker_env = dict(os.environ)
+        worker_env.setdefault("PYTHONUTF8", "1")
         try:
             process = subprocess.Popen(
                 self._command(),
@@ -166,6 +172,7 @@ class MultisimWorkerProcess:
                 errors="replace",
                 bufsize=1,
                 creationflags=creationflags,
+                env=worker_env,
             )
         except OSError as exc:
             raise WorkerUnavailableError(

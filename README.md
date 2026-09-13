@@ -8,7 +8,7 @@
 让 AI Agent 根据实验要求自动生成 Multisim 电路、运行仿真、提取实验数据，并导出
 电路图、CSV、波形图和实验报告。
 
-> 当前开发分支准备发布 `v1.3.0-preview.2`。项目非 NI 官方产品，需要本机安装并授权
+> 当前发布候选版为 `1.3.0rc1`（GitHub 标签 `v1.3.0rc1`）。项目非 NI 官方产品，需要本机安装并授权
 > Multisim 14+；COM 在独立 32 位 Python worker 中运行，MCP 前端可使用 32 或 64 位
 > Python。
 
@@ -26,7 +26,7 @@ OP/AC、完整电路图和报告导出。已在 Multisim 14.3 实测两级（14 
 当前仅实测 Multisim 14.3；新工程仍需图面复核，不代表第二阶段全部完成。
 
 第二阶段预览版的准确变更、验证结果和发布边界见
-[`v1.3.0-preview.2 发布说明`](docs/RELEASE_NOTES_v1.3.0-preview.2.md)。
+[`1.3.0rc1 发布说明`](docs/RELEASE_NOTES_v1.3.0rc1.md)。
 
 > `v1.2.0` 是**不含 React 前端的 MCP Core 正式版**：包含 Python MCP 服务、CLI、EDA
 > 核心、模型/DeepSeek 适配、测试、文档及可选 loopback 桥接 API；不包含仍在独立

@@ -38,7 +38,8 @@ class RunnerContractTest(unittest.TestCase):
             with self.subTest(module=module), tempfile.TemporaryDirectory() as tmp:
                 mod = importlib.import_module('multisim_mcp.' + module)
                 root = Path(tmp) / 'failed'
-                with patch.object(mod, 'build_schematic', side_effect=RuntimeError('injected failure')):
+                with patch.object(mod, 'detect_multisim_version', return_value='14.3'), \
+                     patch.object(mod, 'build_schematic', side_effect=RuntimeError('injected failure')):
                     result = getattr(mod, function)(text, str(root), execute=True)
                 self.check_envelope(result)
                 self.assertEqual(result['stage'], 'failed')

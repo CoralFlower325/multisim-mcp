@@ -4,6 +4,16 @@ from multisim_mcp.component_compat import resolve_component_mapping, validate_co
 
 
 class ComponentCompatibilityTest(unittest.TestCase):
+    def test_installed_manifest_matches_reviewed_source(self):
+        from importlib.resources import files
+        from pathlib import Path
+        import json
+
+        resource = files('multisim_mcp').joinpath('compatibility/components-14.3.json')
+        source = Path(__file__).resolve().parents[2] / 'compatibility/components-14.3.json'
+        self.assertEqual(json.loads(resource.read_text(encoding='utf-8')),
+                         json.loads(source.read_text(encoding='utf-8')))
+
     def setUp(self):
         self.manifest = {"schema_version": 1, "multisim_version": "14.3", "components": [
             {"logical_family": "opamp", "native_name": "OPAMP5", "model_source": "vendor",

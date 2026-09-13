@@ -90,6 +90,7 @@ class _WorkerService:
                     "protocol_version": PROTOCOL_VERSION,
                     "pid": os.getpid(),
                     "python_bits": struct.calcsize("P") * 8,
+                    "stdio_encoding": getattr(sys.stdin, "encoding", ""),
                 }
             raise PermissionError("System worker method is not allowlisted")
         if target == "client":
