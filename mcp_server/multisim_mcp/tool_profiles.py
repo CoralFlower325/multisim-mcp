@@ -41,6 +41,7 @@ ALL_TOOL_NAMES = frozenset(
         "plan_natural_dc_network",
         "plan_natural_rectifier",
         "run_natural_rectifier",
+        "optimize_natural_rectifier",
         "plan_natural_common_emitter",
         "run_natural_common_emitter",
         "run_natural_dc_network",
@@ -171,6 +172,7 @@ _EXPERIMENT_WORKFLOW = frozenset(
         "plan_natural_dc_network",
         "plan_natural_rectifier",
         "run_natural_rectifier",
+        "optimize_natural_rectifier",
         "plan_natural_common_emitter",
         "run_natural_common_emitter",
         "run_natural_dc_network",
@@ -242,6 +244,7 @@ _SWEEP_WORKFLOW = frozenset(
 
 _OPTIMIZATION_WORKFLOW = frozenset(
     {
+        "optimize_natural_rectifier",
         "component_adapter_catalog",
         "schematic_component_catalog",
         "open_circuit",
