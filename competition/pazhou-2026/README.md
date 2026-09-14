@@ -8,3 +8,5 @@
 - [组委会权属确认问题](./ORGANIZER_IP_QUESTIONS.md)
 
 提交前需要补充：参赛队员实名信息、指导教师（如适用）、团队经历、联系方式、真实用户反馈及最终演示链接。
+
+- [参赛与融资策略补充](./FUNDRAISING_PRINCIPLES.md)
