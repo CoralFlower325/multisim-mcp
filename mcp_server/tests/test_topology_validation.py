@@ -167,18 +167,73 @@ class EnumerationEvidenceTest(unittest.TestCase):
 
 
 class PinOrderSemanticsTest(unittest.TestCase):
-    """Pin order is electrical semantics and must not be silently swapped."""
+    """Pin order is electrical semantics and must not be silently swapped.
 
-    def test_swapped_pins_are_reported(self) -> None:
+    Multisim's real report is a pin table (``node circuit refdes pin``), so
+    order is verified from the numeric pin column, not from row order.
+    """
+
+    @staticmethod
+    def _report(rows) -> str:
+        return "".join(f"{node:<18} c  {ref:<6} {pin}\n" for node, ref, pin in rows)
+
+    def test_real_report_shape_correct_order_passes(self) -> None:
+        result = compare_pin_connections(
+            {"R1": ["va", "rb"]},
+            self._report([("va", "R1", "1"), ("rb", "R1", "2")]),
+        )
+        self.assertEqual(result["status"], "pass")
+
+    def test_real_report_shape_swap_is_detected(self) -> None:
+        result = compare_pin_connections(
+            {"R1": ["va", "rb"]},
+            self._report([("rb", "R1", "1"), ("va", "R1", "2")]),
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["mismatches"][0]["reason"], "pin order mismatch")
+
+    def test_pin_order_verified_independently_of_row_order(self) -> None:
+        """Descending rows must still pass when the pin numbers are correct."""
+        result = compare_pin_connections(
+            {"C1": ["rb", "rc"]},
+            self._report([("rc", "C1", "2"), ("rb", "C1", "1")]),
+        )
+        self.assertEqual(result["status"], "pass")
+
+    def test_numeric_pin_swap_detected_with_descending_rows(self) -> None:
+        result = compare_pin_connections(
+            {"C1": ["rb", "rc"]},
+            self._report([("rb", "C1", "2"), ("rc", "C1", "1")]),
+        )
+        self.assertEqual(result["status"], "fail")
+
+    def test_non_numeric_pins_do_not_guess_order(self) -> None:
+        """A/K and IN+/IN- are not positionally sortable without a pin map."""
+        result = compare_pin_connections(
+            {"D1": ["rl", "0"]},
+            self._report([("0", "D1", "K"), ("rl", "D1", "A")]),
+        )
+        self.assertEqual(result["status"], "pass")
+
+    def test_partially_reported_component_does_not_false_fail(self) -> None:
+        """Multisim omits dangling pins; that must not read as a mismatch."""
+        result = compare_pin_connections(
+            {"R1": ["va", "rb"]},
+            self._report([("va", "R1", "1")]),
+            connection_counts={"va": 2, "rb": 1},
+        )
+        self.assertEqual(result["status"], "pass")
+
+    def test_swapped_pins_are_reported_in_spice_form(self) -> None:
         result = compare_pin_connections({"R1": ["vin", "out"]}, "R1 out vin 1k")
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["mismatches"][0]["refdes"], "R1")
 
-    def test_diode_polarity_swap_is_reported(self) -> None:
+    def test_diode_polarity_swap_is_reported_in_spice_form(self) -> None:
         result = compare_pin_connections({"D1": ["a", "k"]}, "D1 k a 1N4001")
         self.assertEqual(result["status"], "fail")
 
-    def test_correct_order_passes(self) -> None:
+    def test_correct_order_passes_in_spice_form(self) -> None:
         result = compare_pin_connections({"R1": ["vin", "out"]}, "R1 vin out 1k")
         self.assertEqual(result["status"], "pass")
 

@@ -177,24 +177,56 @@ def compare_pin_connections(
 
         # Multisim pin table: the reference designator is the third column and
         # every pin of the component appears on its own row.
-        table_nets = [
-            row[0]
+        table_pins = [
+            (row[3], row[0])
             for row in table_rows
             if _refdes_matches(row[2], refdes, sectioned)
         ]
-        if table_nets:
+        if table_pins:
             checked += 1
-            lower = [net.casefold() for net in table_nets]
+            actual_nets = [net for _pin, net in table_pins]
+            lower = {net.casefold() for net in actual_nets}
             missing = [net for net in wanted if net.casefold() not in lower]
             if missing:
                 mismatches.append(
                     {
                         "refdes": refdes,
                         "expected_nets": wanted,
-                        "actual_nets": table_nets,
+                        "actual_nets": actual_nets,
                         "missing_nets": missing,
                     }
                 )
+                continue
+            # Ordered check where the pin column carries pin numbers: a swap of
+            # collector/emitter, IN+/IN- or diode A/K keeps the same net set, so
+            # only the ordering reveals it. Non-numeric pin labels (A/K, C/B/E,
+            # I1/O1) are not positionally sortable without a per-family map, so
+            # ordering is left unverified for those instead of being guessed.
+            numeric_pins = [
+                (int(pin), net) for pin, net in table_pins if pin.lstrip("-").isdigit()
+            ]
+            if len(numeric_pins) == len(table_pins) and len(numeric_pins) == len(wanted):
+                by_pin = [net for _pin, net in sorted(numeric_pins)]
+                if len({pin for pin, _ in numeric_pins}) != len(numeric_pins):
+                    mismatches.append(
+                        {
+                            "refdes": refdes,
+                            "expected_nets": wanted,
+                            "actual_nets": actual_nets,
+                            "reason": "duplicate pin numbers in report",
+                        }
+                    )
+                elif [n.casefold() for n in by_pin] != [
+                    n.casefold() for n in wanted
+                ]:
+                    mismatches.append(
+                        {
+                            "refdes": refdes,
+                            "expected_nets": wanted,
+                            "actual_nets": by_pin,
+                            "reason": "pin order mismatch",
+                        }
+                    )
             continue
 
         # Plain SPICE line: the reference designator is first and the remaining
