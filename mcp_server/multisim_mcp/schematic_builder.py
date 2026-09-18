@@ -1483,6 +1483,97 @@ def _canonicalize_ground_aliases(lines: Sequence[str]) -> list[str]:
     return rendered
 
 
+def _extract_pack_model_definition(template_name: str) -> tuple[str, str] | None:
+    """Return ``(old_model_name, model_body)`` from a local pack model template.
+
+    The licensed pack stores the vendor model as a single ``.MODEL`` string with
+    continuation lines, for example ``.MODEL 2N3904__BJT_NPN__2 NPN(Is=...)``.
+    """
+    try:
+        item = _load_template(template_name)
+    except FileNotFoundError:
+        return None
+    for node in item.iter():
+        # CiaCString stores its payload in ``String``; collection Items use
+        # ``Value``. Accept both so the extractor does not depend on the slot.
+        value = (node.get("String") or node.get("Value") or "").strip()
+        if not value.upper().startswith("&ASC.MODEL "):
+            continue
+        text = value.removeprefix("&ASC")
+        # Join SPICE continuation lines into one logical definition.
+        text = re.sub(r"\s*\n\s*\+?\s*", " ", text)
+        parts = text.split(None, 2)
+        if len(parts) < 3:
+            continue
+        old_name = parts[1].strip().rstrip(",")
+        body = parts[2].strip()
+        if body:
+            return old_name, body
+    return None
+
+
+def _native_alias_model_definition(model_name: str) -> tuple[str, str] | None:
+    """Resolve a native Multisim model alias to an executable ``.model`` body.
+
+    Multisim's command engine does not resolve every model name that its own
+    schematic database knows. Bipolar aliases fail outright (the model token is
+    parsed as a substrate node) and the virtual MOSFET aliases are dropped
+    silently, which would otherwise yield a plausible but wrong open-circuit
+    result. Returning an explicit definition keeps the command-engine run
+    bound to the same model the schematic names.
+
+    Returns ``(definition_body, provenance_note)``.
+    """
+    upper = model_name.upper()
+    pack_templates = {
+        "2N3904": ("qnpn_model.xml", "NPN"),
+        "2N3906": ("qpnp_model.xml", "PNP"),
+    }
+    entry = pack_templates.get(upper)
+    if entry is not None:
+        template_name, _device = entry
+        extracted = _extract_pack_model_definition(template_name)
+        if extracted is not None:
+            _old_name, body = extracted
+            return body, f"licensed local pack template {template_name}"
+        # Fail closed rather than substituting an unverified vendor model.
+        raise FileNotFoundError(
+            f"the local component pack is missing {template_name}; rebuild it with "
+            "tools/bootstrap_local_component_pack.py so the requested "
+            f"{model_name} model can be bound explicitly"
+        )
+    # The native virtual MOSFET carriers carry no transferable parameters, so an
+    # explicit generic Level-1 model is the only portable binding.
+    generic_mos = {
+        "NMOS": "NMOS(Level=1 VTO=1 KP=1m LAMBDA=0)",
+        "PMOS": "PMOS(Level=1 VTO=-1 KP=1m LAMBDA=0)",
+    }
+    if upper in generic_mos:
+        return (
+            generic_mos[upper],
+            "generic Level-1 model; the native virtual carrier has no portable parameters",
+        )
+    return None
+
+
+# Device families whose native model alias the command engine cannot resolve.
+_ALIAS_MODEL_DEVICE_KINDS = frozenset({"Q", "M"})
+
+
+def _alias_model_token(parts: list[str]) -> str | None:
+    """Return the model token of a Q/M device line, if it names a native alias.
+
+    In Multisim's command dialect the model name is the final token of a Q or M
+    line (``Q1 c b e 2N3904``, ``M1 d g s b NMOS``).
+    """
+    if not parts or parts[0][:1].upper() not in _ALIAS_MODEL_DEVICE_KINDS:
+        return None
+    known = {
+        alias for aliases in NATIVE_MODEL_ALIASES.values() for alias in aliases
+    } | {"NMOS", "PMOS"}
+    return parts[-1] if parts[-1].upper() in known else None
+
+
 def prepare_simulation_netlist(
     text: str, *, ngspice_compatible: bool = False
 ) -> str:
@@ -1505,6 +1596,25 @@ def prepare_simulation_netlist(
 
     rendered: list[str] = []
     required_models: dict[str, str] = {}
+    alias_model_notes: dict[str, str] = {}
+    # Native aliases that the command engine cannot resolve must be bound to an
+    # explicit .model, otherwise a BJT run fails on a singular matrix and a MOS
+    # run silently reports an open circuit.
+    for line in logical_lines:
+        parts = line.split()
+        if not parts or line.startswith(("*", ";")):
+            continue
+        alias_token = _alias_model_token(parts)
+        if alias_token is None:
+            continue
+        key = alias_token.upper()
+        if key in existing_models or key in required_models:
+            continue
+        resolved = _native_alias_model_definition(alias_token)
+        if resolved is not None:
+            body, note = resolved
+            required_models[key] = body
+            alias_model_notes[key] = note
     for line in logical_lines:
         parts = line.split()
         if (
@@ -1555,6 +1665,19 @@ def prepare_simulation_netlist(
                     f"B__{stem}_N {negative} {common} V={{-({expression})}}",
                 )
             )
+            continue
+        if (
+            len(parts) == 7
+            and not line.startswith(("*", ";"))
+            and parts[0][0].upper() == "X"
+            and parts[-1].upper() in {"OPAMP5", "IDEALOPAMP"}
+        ):
+            # The command engine has no native OPAMP5 device: an unbound X line
+            # is dropped, which silently leaves the stage with no gain. Emit the
+            # same ideal VCVS the editable schematic carrier uses.
+            in_plus, in_minus, _vp, _vn, out = parts[1:6]
+            stem = re.sub(r"[^A-Za-z0-9_]", "_", parts[0])
+            rendered.append(f"E__{stem} {out} 0 {in_plus} {in_minus} 1e5")
             continue
         if (
             len(parts) == 8
@@ -1703,17 +1826,24 @@ def prepare_simulation_netlist(
                 if kind == "DJK7" and alias not in existing_models:
                     required_models[alias] = DIGITAL_CODE_MODELS[alias]
         if line.lower().startswith(".end") and not line.lower().startswith(".ends"):
-            rendered.extend(
-                f".model {name} {definition}"
-                for name, definition in sorted(required_models.items())
-            )
+            for name, definition in sorted(required_models.items()):
+                if name in alias_model_notes:
+                    rendered.append(
+                        f"* multisim-mcp: bound native alias {name} explicitly "
+                        f"({alias_model_notes[name]})"
+                    )
+                rendered.append(f".model {name} {definition}")
             required_models.clear()
+            alias_model_notes.clear()
         rendered.append(line)
     if required_models:
-        rendered.extend(
-            f".model {name} {definition}"
-            for name, definition in sorted(required_models.items())
-        )
+        for name, definition in sorted(required_models.items()):
+            if name in alias_model_notes:
+                rendered.append(
+                    f"* multisim-mcp: bound native alias {name} explicitly "
+                    f"({alias_model_notes[name]})"
+                )
+            rendered.append(f".model {name} {definition}")
     return "\n".join(rendered).rstrip() + "\n"
 
 

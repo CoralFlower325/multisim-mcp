@@ -2180,14 +2180,47 @@ def _create_schematic_impl(
         finally:
             verification_path.unlink(missing_ok=True)
         expected_specs = [item for item in parsed.components if item.kind != "GND"]
+        # Multisim reports one section of a multi-section part as A1A/U1A/XU1A
+        # while EnumComponents returns the parent reference; virtual instruments
+        # are not electrical SPICE devices and never reach the exported netlist.
+        multi_section_refdes = [
+            spec.refdes
+            for spec in expected_specs
+            if spec.kind.startswith("D")
+            or spec.kind.startswith("XSUB")
+            or spec.kind in {"OPAMP5", "TIMER8", "DFF8"}
+        ]
+        virtual_instrument_refdes = [
+            spec.refdes for spec in expected_specs if spec.kind in {"OSC6", "XFG3"}
+        ]
+        # A net needs at least two physical pins to exist; Multisim legitimately
+        # drops one-pin nets instead of exporting a floating node.
+        connection_counts: dict[str, int] = {}
+        for spec in expected_specs:
+            for node in spec.nodes:
+                connection_counts[node] = connection_counts.get(node, 0) + 1
+        # K (coupling) is enumerated natively but omitted by ReportNetlist, so
+        # native enumeration is its presence evidence.
+        enumeration_only_refdes = {
+            spec.refdes for spec in expected_specs if spec.kind == "K"
+        }
+        enumerated_components_set = set(result["verification"]["components"])
         topology_diff = compare_roundtrip_topology(
             (spec.refdes for spec in expected_specs),
             (net for net in build_result.get("nets", []) if net != "0"),
             exported,
+            multi_section_components=multi_section_refdes,
+            connection_counts=connection_counts,
+            excluded_components=virtual_instrument_refdes,
+            enumerated_components=enumerated_components_set,
+            enumeration_only_components=enumeration_only_refdes,
         )
         pin_diff = compare_pin_connections(
             {spec.refdes: list(spec.nodes) for spec in expected_specs},
             exported,
+            connection_counts=connection_counts,
+            multi_section_components=multi_section_refdes,
+            excluded_components=virtual_instrument_refdes,
         )
         topology_diff_path = output_path.with_name(output_path.stem + ".topology-diff.json")
         topology_diff_path.write_text(
