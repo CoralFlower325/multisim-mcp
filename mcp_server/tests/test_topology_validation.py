@@ -100,6 +100,16 @@ class VirtualInstrumentTest(unittest.TestCase):
             sorted(result["excluded_components"]), ["XFG1", "XSC1"]
         )
 
+    def test_instruments_are_reported_as_unverifiable(self) -> None:
+        """Excluded instruments must not be silently asserted as present."""
+        result = compare_roundtrip_topology(
+            ["R1", "XSC1"],
+            ["out"],
+            "out  c  R1  1\n",
+            excluded_components=["XSC1"],
+        )
+        self.assertEqual(result["presence_unverifiable_components"], ["XSC1"])
+
     def test_excluded_component_skipped_in_pin_check(self) -> None:
         result = compare_pin_connections(
             {"XSC1": ["out"], "R1": ["out", "0"]},
@@ -110,7 +120,9 @@ class VirtualInstrumentTest(unittest.TestCase):
 
 
 class EnumerationEvidenceTest(unittest.TestCase):
-    """K (coupling) is enumerated natively but omitted from ReportNetlist."""
+    """Multisim's ReportNetlist omits devices its EnumComponents reports
+    (K coupling, fully-dangling expanded subcircuit primitives, virtual
+    instruments). Native enumeration is the decisive presence evidence."""
 
     def test_enumeration_satisfies_presence(self) -> None:
         result = compare_roundtrip_topology(
@@ -118,10 +130,21 @@ class EnumerationEvidenceTest(unittest.TestCase):
             ["out"],
             "out  c  L1  2\n",
             enumerated_components=["K1", "L1"],
-            enumeration_only_components=["K1"],
         )
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["enumeration_verified_components"], ["K1"])
+
+    def test_dangling_expanded_primitive_is_rescued(self) -> None:
+        # An expanded subcircuit resistor whose two nodes are both dangling is
+        # reported by EnumComponents but omitted from ReportNetlist.
+        result = compare_roundtrip_topology(
+            ["RX888227461"],
+            [],
+            "",
+            enumerated_components=["RX888227461"],
+        )
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["enumeration_verified_components"], ["RX888227461"])
 
     def test_enumeration_evidence_requires_actual_enumeration(self) -> None:
         result = compare_roundtrip_topology(
@@ -129,10 +152,80 @@ class EnumerationEvidenceTest(unittest.TestCase):
             ["out"],
             "out  c  L1  2\n",
             enumerated_components=["L1"],
-            enumeration_only_components=["K1"],
         )
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["missing_components"], ["K1"])
+
+    def test_enumeration_does_not_launder_absent_component(self) -> None:
+        """Enumeration must not make a never-placed part look present."""
+        result = compare_roundtrip_topology(
+            ["R1", "C9"], ["a"], "a  c  R1  1\n",
+            enumerated_components=["R1"],
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["missing_components"], ["C9"])
+
+
+class PinOrderSemanticsTest(unittest.TestCase):
+    """Pin order is electrical semantics and must not be silently swapped."""
+
+    def test_swapped_pins_are_reported(self) -> None:
+        result = compare_pin_connections({"R1": ["vin", "out"]}, "R1 out vin 1k")
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["mismatches"][0]["refdes"], "R1")
+
+    def test_diode_polarity_swap_is_reported(self) -> None:
+        result = compare_pin_connections({"D1": ["a", "k"]}, "D1 k a 1N4001")
+        self.assertEqual(result["status"], "fail")
+
+    def test_correct_order_passes(self) -> None:
+        result = compare_pin_connections({"R1": ["vin", "out"]}, "R1 vin out 1k")
+        self.assertEqual(result["status"], "pass")
+
+    def test_net_case_difference_is_not_a_mismatch(self) -> None:
+        result = compare_pin_connections({"R1": ["vin", "out"]}, "R1 VIN OUT 1k")
+        self.assertEqual(result["status"], "pass")
+
+
+class GenuineLossStillFailsTest(unittest.TestCase):
+    """The relaxations must not weaken detection of a really dropped part."""
+
+    def test_dropped_component_fails_without_enumeration(self) -> None:
+        result = compare_roundtrip_topology(
+            ["R1", "R2"], ["a", "b"],
+            "a  c  R1  1\nb  c  R1  2\n",
+            enumerated_components=["R1"],
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["missing_components"], ["R2"])
+
+    def test_instrument_exclusion_does_not_hide_part_drop(self) -> None:
+        result = compare_roundtrip_topology(
+            ["R1", "R2", "XSC1"], ["a"],
+            "a  c  R1  1\n",
+            excluded_components=["XSC1"],
+            enumerated_components=["R1"],
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["missing_components"], ["R2"])
+
+    def test_section_suffix_does_not_rescue_other_device(self) -> None:
+        result = compare_roundtrip_topology(
+            ["A2"], ["x"], "x  c  A1A  1\n",
+            multi_section_components=["A2"],
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["missing_components"], ["A2"])
+
+    def test_lost_multipin_net_alongside_dangling_net(self) -> None:
+        result = compare_roundtrip_topology(
+            ["R1", "R2"], ["floating", "lost"],
+            "a  c  R1  1\na  c  R2  1\n",
+            connection_counts={"floating": 1, "lost": 2},
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["missing_nets"], ["lost"])
+        self.assertEqual(result["skipped_dangling_nets"], ["floating"])
 
 
 if __name__ == "__main__":

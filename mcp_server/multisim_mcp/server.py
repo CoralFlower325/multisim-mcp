@@ -2194,16 +2194,18 @@ def _create_schematic_impl(
             spec.refdes for spec in expected_specs if spec.kind in {"OSC6", "XFG3"}
         ]
         # A net needs at least two physical pins to exist; Multisim legitimately
-        # drops one-pin nets instead of exporting a floating node.
+        # drops one-pin nets instead of exporting a floating node. Virtual
+        # instruments are excluded here too: their probe pins are not electrical
+        # connections, so counting them would make a dangling net look connected.
         connection_counts: dict[str, int] = {}
         for spec in expected_specs:
+            if spec.refdes in virtual_instrument_refdes:
+                continue
             for node in spec.nodes:
                 connection_counts[node] = connection_counts.get(node, 0) + 1
-        # K (coupling) is enumerated natively but omitted by ReportNetlist, so
-        # native enumeration is its presence evidence.
-        enumeration_only_refdes = {
-            spec.refdes for spec in expected_specs if spec.kind == "K"
-        }
+        # Multisim's ReportNetlist omits some devices that EnumComponents reports
+        # (K coupling, fully-dangling expanded subcircuit primitives), so native
+        # enumeration is the decisive presence evidence for those.
         enumerated_components_set = set(result["verification"]["components"])
         topology_diff = compare_roundtrip_topology(
             (spec.refdes for spec in expected_specs),
@@ -2213,7 +2215,6 @@ def _create_schematic_impl(
             connection_counts=connection_counts,
             excluded_components=virtual_instrument_refdes,
             enumerated_components=enumerated_components_set,
-            enumeration_only_components=enumeration_only_refdes,
         )
         pin_diff = compare_pin_connections(
             {spec.refdes: list(spec.nodes) for spec in expected_specs},
@@ -2243,6 +2244,7 @@ def _create_schematic_impl(
         result["verification"]["virtual_instruments"] = [
             spec.refdes for spec in expected_specs if spec.kind in {"OSC6", "XFG3"}
         ]
+        unverifiable_components: list[str] = []
         for spec in expected_specs:
             # Multi-section digital parts are reported by Multisim as A1A/U1A
             # while EnumComponents returns their parent reference A1/U1.
@@ -2256,8 +2258,17 @@ def _create_schematic_impl(
             if spec.kind in {"OPAMP5", "TIMER8", "DFF8"} or spec.kind.startswith("XSUB"):
                 candidates.append(spec.refdes + "A")
             if spec.kind in {"OSC6", "XFG3"}:
-                native_components[spec.refdes] = True
-                native_evidence[spec.refdes] = "virtual-instrument enumeration"
+                # Virtual instruments are not observable through any available
+                # COM evidence path: ReportNetlist, EnumComponents(0..5) and
+                # ReportBOM all omit them. They are not electrical SPICE devices
+                # either, so they must not gate the netlist-completeness check.
+                # They are tracked separately as unverifiable instead.
+                unverifiable_components.append(spec.refdes)
+                native_evidence[spec.refdes] = (
+                    "virtual instrument; not observable through ReportNetlist, "
+                    "EnumComponents or ReportBOM, so its presence is not verified"
+                )
+                continue
             elif spec.kind in {"TIMER8", "DFF8"}:
                 # Multisim keeps vendor timer macro-models as native
                 # components, but ReportNetlist may omit their internal
@@ -2271,16 +2282,33 @@ def _create_schematic_impl(
                 native_components[spec.refdes] = spec.refdes in enumerated_components
                 native_evidence[spec.refdes] = "native component enumeration"
             else:
-                native_components[spec.refdes] = any(
+                text_match = any(
                     re.search(
                         rf"(?<![A-Za-z0-9_]){re.escape(candidate)}(?![A-Za-z0-9_])",
                         exported,
                     )
                     for candidate in candidates
                 )
-                native_evidence[spec.refdes] = "ReportNetlist text match"
+                if text_match:
+                    native_components[spec.refdes] = True
+                    native_evidence[spec.refdes] = "ReportNetlist text match"
+                else:
+                    # ReportNetlist is known to omit some devices that are really
+                    # in the design (K coupling, fully-dangling expanded
+                    # subcircuit primitives, virtual instruments). Native
+                    # enumeration is the authoritative check: a component the
+                    # generator never placed cannot be enumerated either, so a
+                    # genuinely dropped part still fails here.
+                    native_components[spec.refdes] = spec.refdes in enumerated_components
+                    native_evidence[spec.refdes] = (
+                        "absent from ReportNetlist; confirmed by native component "
+                        "enumeration"
+                        if native_components[spec.refdes]
+                        else "absent from ReportNetlist and not enumerated"
+                    )
         result["verification"]["native_netlist_components"] = native_components
         result["verification"]["native_component_evidence"] = native_evidence
+        result["verification"]["unverifiable_components"] = unverifiable_components
         result["verification"]["native_netlist_complete"] = all(
             native_components.values()
         )

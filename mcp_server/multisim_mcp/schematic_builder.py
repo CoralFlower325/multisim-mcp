@@ -1563,15 +1563,31 @@ _ALIAS_MODEL_DEVICE_KINDS = frozenset({"Q", "M"})
 def _alias_model_token(parts: list[str]) -> str | None:
     """Return the model token of a Q/M device line, if it names a native alias.
 
-    In Multisim's command dialect the model name is the final token of a Q or M
-    line (``Q1 c b e 2N3904``, ``M1 d g s b NMOS``).
+    The model position must match ``parse_netlist``, which reads ``parts[4]``
+    for a Q record (``Qname C B E model [area]``) and ``parts[5]`` for an M
+    record (``Mname D G S B model [params...]``). Reading the last token
+    instead would miss every line that carries instance parameters, which is
+    the normal form for MOSFETs.
     """
-    if not parts or parts[0][:1].upper() not in _ALIAS_MODEL_DEVICE_KINDS:
+    if not parts:
         return None
+    kind = parts[0][:1].upper()
+    position = {"Q": 4, "M": 5}.get(kind)
+    if position is None or len(parts) <= position:
+        return None
+    # Only the alias set for that device family may be bound here.
+    family = {"Q": frozenset({"QNPN", "QPNP"}), "M": frozenset({"MNMOS", "MPMOS"})}[kind]
     known = {
-        alias for aliases in NATIVE_MODEL_ALIASES.values() for alias in aliases
-    } | {"NMOS", "PMOS"}
-    return parts[-1] if parts[-1].upper() in known else None
+        alias
+        for device_kind in family
+        for alias in NATIVE_MODEL_ALIASES.get(device_kind, ())
+    }
+    # The virtual MOS carriers are not listed as vendor aliases: they are the
+    # generic Level-1 templates.
+    if kind == "M":
+        known = known | {"NMOS", "PMOS"}
+    token = parts[position]
+    return token if token.upper() in known else None
 
 
 def prepare_simulation_netlist(
@@ -1667,14 +1683,17 @@ def prepare_simulation_netlist(
             )
             continue
         if (
-            len(parts) == 7
+            len(parts) >= 7
             and not line.startswith(("*", ";"))
             and parts[0][0].upper() == "X"
-            and parts[-1].upper() in {"OPAMP5", "IDEALOPAMP"}
+            and parts[6].upper() in {"OPAMP5", "IDEALOPAMP"}
         ):
             # The command engine has no native OPAMP5 device: an unbound X line
             # is dropped, which silently leaves the stage with no gain. Emit the
-            # same ideal VCVS the editable schematic carrier uses.
+            # same ideal VCVS the editable schematic carrier uses. An OPAMP5
+            # instance has five nodes after the reference designator, so the
+            # model token sits at index 6 and trailing instance parameters do
+            # not defeat this translation.
             in_plus, in_minus, _vp, _vn, out = parts[1:6]
             stem = re.sub(r"[^A-Za-z0-9_]", "_", parts[0])
             rendered.append(f"E__{stem} {out} 0 {in_plus} {in_minus} 1e5")

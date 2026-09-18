@@ -41,7 +41,6 @@ def compare_roundtrip_topology(
     connection_counts: Mapping[str, int] | None = None,
     excluded_components: Iterable[str] = (),
     enumerated_components: Iterable[str] = (),
-    enumeration_only_components: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Compare stable names without assuming a vendor netlist dialect.
 
@@ -53,17 +52,21 @@ def compare_roundtrip_topology(
       legitimately omitted from the exported netlist. This is not a loss of
       topology: a one-pin net carries no current path.
     * Virtual instruments (oscilloscope, function generator) are not electrical
-      SPICE devices and never appear in the exported netlist.
-    * Coupling/temperature devices such as ``K`` are enumerated natively but
-      omitted from ReportNetlist, so native enumeration is their presence
-      evidence.
+      SPICE devices and never appear in the exported netlist, so they cannot be
+      confirmed here; they are reported as unverifiable rather than assumed
+      present.
+    * A component that Multisim's own ``EnumComponents`` reports but its
+      ``ReportNetlist`` omits is present in the design: the text report is
+      incomplete, not the design. This covers coupling devices (``K``) and
+      expanded subcircuit primitives whose nodes are all dangling.
+
+    Native enumeration is the decisive evidence for that last case, so a
+    genuinely dropped component still fails: if the generator never placed the
+    part, Multisim cannot enumerate it.
     """
     sectioned = {str(item) for item in multi_section_components if str(item)}
     excluded = {str(item) for item in excluded_components if str(item)}
     enumerated = {str(item) for item in enumerated_components if str(item)}
-    enumeration_only = {
-        str(item) for item in enumeration_only_components if str(item)
-    }
     components = sorted(
         {
             str(item)
@@ -80,7 +83,7 @@ def compare_roundtrip_topology(
             continue
         if item in sectioned and _present_with_section(exported_netlist, item):
             continue
-        if item in enumeration_only and item in enumerated:
+        if item in enumerated:
             enumeration_verified.append(item)
             continue
         missing_components.append(item)
@@ -110,12 +113,13 @@ def compare_roundtrip_topology(
         "skipped_dangling_nets": sorted(dangling_nets),
         "excluded_components": sorted(excluded),
         "enumeration_verified_components": sorted(enumeration_verified),
+        "presence_unverifiable_components": sorted(excluded),
         "evidence": (
-            "Multisim ReportNetlist text presence plus native enumeration for "
+            "Multisim ReportNetlist text presence, plus native enumeration for "
             "devices Multisim omits from the text report; multi-section suffixes "
-            "are accepted, dangling one-pin nets and non-electrical virtual "
-            "instruments are excluded, and internal vendor nodes are not treated "
-            "as extras"
+            "are accepted, dangling one-pin nets are not required, excluded "
+            "virtual instruments are recorded as unverifiable rather than "
+            "assumed present, and internal vendor nodes are not treated as extras"
         ),
     }
 
@@ -180,7 +184,8 @@ def compare_pin_connections(
         ]
         if table_nets:
             checked += 1
-            missing = [net for net in wanted if net not in table_nets]
+            lower = [net.casefold() for net in table_nets]
+            missing = [net for net in wanted if net.casefold() not in lower]
             if missing:
                 mismatches.append(
                     {
@@ -203,14 +208,19 @@ def compare_pin_connections(
             continue
         checked += 1
         tokens = spice_row[1:]
-        missing = [net for net in wanted if net not in tokens]
-        if missing:
+        # Ordered check first: pin order is electrical semantics (collector vs
+        # emitter, IN+ vs IN-, diode A vs K) and must not be silently swapped.
+        actual_pins = tokens[: len(wanted)]
+        ordered_match = [t.casefold() for t in actual_pins] == [
+            n.casefold() for n in wanted
+        ]
+        if not ordered_match:
             mismatches.append(
                 {
                     "refdes": refdes,
                     "expected_nets": wanted,
-                    "actual_nets": tokens,
-                    "missing_nets": missing,
+                    "actual_nets": actual_pins,
+                    "reason": "pin order or net mismatch",
                 }
             )
     return {
