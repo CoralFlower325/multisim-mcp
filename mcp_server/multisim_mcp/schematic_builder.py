@@ -2614,6 +2614,145 @@ def _rectifier_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
                          'RLOAD':(909,216), '0':(909,486)}}
 
 
+def _digital_stage_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
+    """Lay digital logic out in signal-chain reading order.
+
+    Digital designs are read as a chain, so placement has to follow the data
+    path rather than connection order. The generic grid places parts in
+    breadth-first order, which scatters one logic stage across the sheet and
+    makes every signal net span the whole drawing.
+
+    The chain is derived from the data nets only: supply rails and wide-fanout
+    buses (a clock or reset feeding several devices) are skipped, because they
+    connect everything to everything and would flatten the ordering. Support
+    parts (pull-downs, indicator diodes) are emitted right after the device
+    they serve, so their net stays short.
+
+    Returns ``positions`` only when the netlist has a real digital core; analog
+    circuits keep their own dedicated profiles.
+    """
+    parts = [s for s in specs if s.kind != "GND"]
+    if not parts:
+        return None
+    digital_kinds = set(DIGITAL_MODEL_KINDS.values())
+    digital = [s for s in parts if s.kind in digital_kinds]
+    analog_active = {"OPAMP5", "LM324AJ", "QNPN", "QPNP", "MNMOS", "MPMOS", "JN", "JP"}
+    if len(digital) < 3 or any(s.kind in analog_active for s in parts):
+        return None
+
+    supply_names = {"0", "vdd", "vcc", "vss", "gnd", "vee"}
+    members: dict[str, list[int]] = {}
+    for i, spec in enumerate(parts):
+        for node in set(spec.nodes):
+            members.setdefault(node, []).append(i)
+
+    # Nets that connect more than a couple of devices are shared control
+    # lines (clock, reset) and carry no ordering information.
+    BUS_FANOUT = 3
+    data_nets = {
+        node
+        for node, idxs in members.items()
+        if node.lower() not in supply_names and len(idxs) <= BUS_FANOUT
+    }
+
+    drives: dict[int, list[int]] = {i: [] for i in range(len(parts))}
+    feeds: dict[int, list[int]] = {i: [] for i in range(len(parts))}
+    for node in data_nets:
+        idxs = members[node]
+        for src in idxs:
+            for dst in idxs:
+                if src != dst:
+                    drives[src].append(dst)
+                    feeds[dst].append(src)
+
+    source_kinds = {"V", "I", "BV", "BI", "XFG3"}
+    passive_kinds = {"R", "C", "L", "D", "K"}
+    is_support = [s.kind in passive_kinds for s in parts]
+    is_driver = [s.kind in source_kinds for s in parts]
+
+    # Walk the data path depth-first from each driver, emitting each device
+    # once. A ring (the usual counter topology) closes back on a visited node,
+    # which simply ends that branch instead of looping forever.
+    order: list[int] = []
+    emitted = set()
+
+    def walk(i: int) -> None:
+        if i in emitted:
+            return
+        emitted.add(i)
+        order.append(i)
+        for nxt in sorted(drives[i]):
+            if is_support[nxt]:
+                continue
+            walk(nxt)
+
+    for i in range(len(parts)):
+        if is_driver[i]:
+            walk(i)
+    for i in range(len(parts)):
+        if not is_support[i]:
+            walk(i)
+    # Unreached support parts go last, keeping their declared order.
+    for i in range(len(parts)):
+        if i not in emitted:
+            emitted.add(i)
+            order.append(i)
+
+    # Support parts follow the device they load, so the net between them is
+    # short; a support part on a wide net (a shared pull-down) goes to the end.
+    placements: list[int] = []
+    attached: dict[int, list[int]] = {}
+    for i, spec in enumerate(parts):
+        if not is_support[i]:
+            continue
+        host = None
+        for node in spec.nodes:
+            if node.lower() in supply_names:
+                continue
+            for j in members.get(node, ()):
+                if not is_support[j] and j in emitted:
+                    host = j
+                    break
+            if host is not None:
+                break
+        if host is None:
+            placements.append(i)
+        else:
+            attached.setdefault(host, []).append(i)
+
+    ordered: list[int] = []
+    for i in order:
+        ordered.append(i)
+        ordered.extend(attached.get(i, ()))
+    for i in placements:
+        ordered.append(i)
+
+    # Place with the same grid the generic path uses, but in signal-chain
+    # order. Keeping the proven geometry constants avoids re-introducing the
+    # connectivity problems that a custom pitch caused.
+    per_row = min(6, max(2, math.ceil(math.sqrt(max(1, len(ordered) + 1)))))
+    col_step = 270
+    row_step = 216
+    origin_x = 36
+    origin_y = 117
+    positions: dict[str, tuple[float, float]] = {}
+    for slot, i in enumerate(ordered):
+        positions[parts[i].refdes] = (
+            origin_x + (slot % per_row) * col_step,
+            origin_y + (slot // per_row) * row_step,
+        )
+
+    # Every spec needs a position; build_schematic looks each one up. A digital
+    # gate may also name "0" as one of its own terminals.
+    ground_kinds = [s for s in specs if s.kind == "GND"]
+    row_count = (len(ordered) - 1) // per_row + 1
+    for spec in ground_kinds:
+        positions[spec.refdes] = (
+            origin_x, origin_y + row_count * row_step
+        )
+    return {"positions": positions}
+
+
 def _common_emitter_profile(specs: list[ComponentSpec]) -> dict[str, Any] | None:
     expected = {"VCC": ("V", ["vcc", "0"]), "VIN": ("V", ["in", "0"]),
                 "RBIAS1": ("R", ["vcc", "base"]), "RBIAS2": ("R", ["base", "0"]),
@@ -3153,14 +3292,21 @@ def build_schematic(
     grid_origin_y = 117
     grid_step_x = 270
     grid_step_y = 216
-    placement_rank = {
-        component_index: rank
-        for rank, component_index in enumerate(_component_placement_order(specs))
-    }
+
+    # Decide the digital layout before anything is placed: it may add extra
+    # ground symbols, which have to exist as specs before the ranks are built.
     simple_profile = _simple_analog_profile(specs)
     opamp_profile = _opamp_profile(specs)
     ce_profile = _common_emitter_profile(specs)
     rectifier_profile = _rectifier_profile(specs)
+    digital_profile = None
+    if not any((simple_profile, opamp_profile, ce_profile, rectifier_profile)):
+        digital_profile = _digital_stage_profile(specs)
+
+    placement_rank = {
+        component_index: rank
+        for rank, component_index in enumerate(_component_placement_order(specs))
+    }
     node_records: dict[str, dict[str, Any]] = {}
     connections: dict[str, list[dict[str, Any]]] = {}
     component_items: list[ET.Element] = []
@@ -3259,6 +3405,8 @@ def build_schematic(
             x, y = ce_profile['positions'][spec.refdes]
         elif rectifier_profile:
             x, y = rectifier_profile['positions'][spec.refdes]
+        elif digital_profile:
+            x, y = digital_profile['positions'][spec.refdes]
         max_component_x = max(max_component_x, x + 126)
         max_component_y = max(max_component_y, y + 108)
         placements.append({"refdes": spec.refdes, "kind": spec.kind, "x": x, "y": y})
@@ -3661,7 +3809,7 @@ def build_schematic(
 
     return {
         "xml": str(output_path),
-        "layout_profile": "bridge_rectifier" if rectifier_profile else "common_emitter" if ce_profile else "source_series_shunt" if simple_profile else "pin_escape_obstacle_routing",
+        "layout_profile": "bridge_rectifier" if rectifier_profile else "common_emitter" if ce_profile else "source_series_shunt" if simple_profile else "digital_signal_chain" if digital_profile else "pin_escape_obstacle_routing",
         "geometry": {"placements": placements, "wires": net_wires, "pins": net_pin_points},
         "components": [
             {

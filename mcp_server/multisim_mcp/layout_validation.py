@@ -30,6 +30,7 @@ def validate_schematic_geometry(
     component_width: float = 126.0,
     component_height: float = 108.0,
     clearance: float = 12.0,
+    max_crossings_per_wire: float = 2.0,
 ) -> dict[str, Any]:
     """Return bounded, JSON-safe geometry findings.
 
@@ -166,12 +167,31 @@ def validate_schematic_geometry(
             elif relation:
                 crossing_count += 1
 
+    # Crossings are not electrical errors, but a sheet with several crossings
+    # per wire is unreadable whether or not it simulates. Judge the rate rather
+    # than the raw count so the verdict does not depend on circuit size.
+    wire_count = sum(len(paths) for paths in wires.values())
+    crossings_per_wire = crossing_count / wire_count if wire_count else 0.0
+    if wire_count and crossings_per_wire > max_crossings_per_wire:
+        findings.append(
+            {
+                "severity": "error",
+                "code": "excessive-wire-crossings",
+                "crossings": crossing_count,
+                "wires": wire_count,
+                "crossings_per_wire": round(crossings_per_wire, 3),
+                "limit": max_crossings_per_wire,
+            }
+        )
+
     return {
         "schema_version": 1,
         "status": "fail" if any(item["severity"] == "error" for item in findings) else "pass",
         "component_count": len(placements),
-        "wire_count": sum(len(paths) for paths in wires.values()),
+        "wire_count": wire_count,
         "different_net_crossings": crossing_count,
+        "crossings_per_wire": round(crossings_per_wire, 3),
+        "crossings_limit_per_wire": max_crossings_per_wire,
         "findings": findings,
     }
 
