@@ -16,7 +16,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from multisim_mcp.layout_validation import validate_schematic_geometry
 from multisim_mcp.orthogonal_routing import route_pins, junction_point, pin_escape
@@ -908,6 +908,27 @@ def template_search_paths() -> list[Path]:
     if not (override and local_only):
         paths.append(TEMPLATE_DIR)
     return paths
+
+
+def _model_template_for_id(model_id: str) -> Path | None:
+    """Return the pack template defining ``model_id``, if one exists.
+
+    A device kind does not map to a model file of the same name: the switch
+    carrier reuses the MOS model, for instance. Locating the definition by its
+    declared id is the only reliable way to pair a component with its CiModel.
+    """
+    for root in template_search_paths():
+        if not root.is_dir():
+            continue
+        for candidate in sorted(root.glob("*_model.xml")):
+            try:
+                with candidate.open(encoding="utf-8", errors="replace") as stream:
+                    head = stream.read(4096)
+            except OSError:
+                continue
+            if f'CiID="{model_id}"' in head:
+                return candidate
+    return None
 
 
 def _deepcopy(element: ET.Element) -> ET.Element:
@@ -3105,6 +3126,11 @@ def build_schematic(
     models = next(root.iter("Models"), None)
     model_refs: set[str] = set()
     native_models: dict[str, ET.Element] = {}
+    # XSPICE code-model objects emitted for digital macros, plus the refdes set
+    # already handled, so one model object is shared by every gate that uses it.
+    digital_model_items: list[ET.Element] = []
+    digital_model_emitted: set[str] = set()
+    emitted_model_ids: set[str | None] = set()
 
     _clear(objects)
     _clear(refs)
@@ -3192,6 +3218,30 @@ def build_schematic(
                 native_models[spec.kind] = model_item
                 elements.append(model_item)
             comp.set("Model", native_models[spec.kind].get("CiID"))
+        # Any element template that declares a Model id must be accompanied by
+        # the matching CiModel object in the same file. Otherwise Multisim
+        # reports "Unable to identify XSPICE code model for simulation" and
+        # silently drops the part -- a failure the logical netlist never shows,
+        # because the pins are still bound. This covers digital gate macros
+        # (d_inverter, d_jkff), the diode carrier, and the switch carrier.
+        # Derived gates reference no model and are skipped automatically.
+        declared_model = comp.get("Model") if comp is not None else None
+        if declared_model and spec.kind not in digital_model_emitted:
+            model_path = _model_template_for_id(str(declared_model))
+            if model_path is not None:
+                model_item = _deepcopy(_load_template(model_path.name))
+                model_node = model_item.find("CiModel")
+                if model_node is not None:
+                    model_node.set("Scope", circuit_item.get("CiID"))
+                # The id lives on the wrapper Item element.
+                template_id = model_item.get("CiID") or (
+                    model_node.get("CiID") if model_node is not None else None
+                )
+                if template_id == declared_model and template_id not in emitted_model_ids:
+                    emitted_model_ids.add(template_id)
+                    digital_model_items.append(model_item)
+                    elements.append(model_item)
+                digital_model_emitted.add(spec.refdes)
         if comp is not None and comp.get("Model"):
             # Native components extracted from a licensed Multisim database
             # may point at a CiModel object outside the component subtree.
