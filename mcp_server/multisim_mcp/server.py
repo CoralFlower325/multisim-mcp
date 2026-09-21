@@ -177,6 +177,7 @@ from multisim_mcp.schematic_builder import (
     parse_netlist,
     prepare_simulation_netlist,
     template_completeness,
+    template_status,
     template_search_paths,
 )
 from multisim_mcp.topology_validation import compare_pin_connections, compare_roundtrip_topology
@@ -678,12 +679,16 @@ def runtime_status() -> dict:
     missing = [
         name for name in required if not any((path / name).is_file() for path in paths)
     ]
-    result["schematic_templates_ready"] = not missing and not completeness[
-        "core_missing_kinds"
-    ]
+    # Match doctor: a pack is not fully ready while any documented family is
+    # unavailable. Keep the graded status so callers can distinguish an
+    # optional-carrier warning from a core-family failure.
+    result["schematic_templates_ready"] = not missing and completeness["complete"]
+    result["schematic_templates_status"] = "fail" if missing else template_status(paths)
     result["missing_schematic_templates"] = missing
     result["unavailable_component_kinds"] = completeness["unavailable_kinds"]
     result["missing_component_templates"] = completeness["missing_by_kind"]
+    result["core_missing_component_kinds"] = completeness["core_missing_kinds"]
+    result["extended_missing_component_kinds"] = completeness["extended_missing_kinds"]
     result["tool_profile"] = tool_profile_status(_TOOL_PROFILE)
     result["api_contract"] = build_capabilities(
         server_version=__version__,
@@ -1352,10 +1357,17 @@ def schematic_component_catalog() -> dict:
     search_paths = completeness["search_paths"]
     missing_by_kind = completeness["missing_by_kind"]
     unavailable = set(completeness["unavailable_kinds"])
-    templates_ready = not completeness["core_missing_kinds"]
+    templates_ready = completeness["complete"]
     return {
         "template_search_paths": [str(path) for path in search_paths],
         "schematic_templates_ready": templates_ready,
+        "schematic_templates_status": (
+            "fail"
+            if completeness["core_missing_kinds"]
+            else "warn"
+            if completeness["extended_missing_kinds"]
+            else "pass"
+        ),
         "template_setup_hint": (
             None
             if templates_ready

@@ -935,11 +935,13 @@ def component_template_files(definition: ComponentDefinition) -> tuple[str, ...]
 def template_completeness(
     paths: list[Path] | None = None,
 ) -> dict[str, Any]:
-    """Report per-family template availability across the searched pack roots.
+    """Report per-family availability across the trusted search roots.
 
-    ``doctor`` and ``schematic_component_catalog`` both consume this so the two
-    surfaces cannot drift apart. A family counts as available only when *every*
-    one of its element, symbol and port templates resolves in a single root.
+    ``template_search_paths`` is an intentional overlay chain: a user-local
+    licensed pack can provide device-specific carriers while the package root
+    supplies generic fallback templates. Each required file therefore only
+    needs to resolve from one trusted root. Doctor, runtime status, and the
+    component catalog all consume this same report.
     """
     search_paths = (
         list(paths) if paths is not None else template_search_paths()
